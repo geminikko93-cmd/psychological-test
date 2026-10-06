@@ -82,7 +82,9 @@ def pick(prompt: str, body: dict) -> dict | str:
 async def messages(request: Request):
     body = await request.json()
     hdr = {k.lower(): v for k, v in request.headers.items()}
-    LOG.append({"headers": {k: ("***" if k in ("x-api-key", "authorization") else v) for k, v in hdr.items()}, "model": body.get("model")})
+    first = (body.get("messages") or [{}])[0].get("content", "")
+    LOG.append({"headers": {k: ("***" if k in ("x-api-key", "authorization") else v) for k, v in hdr.items()}, "model": body.get("model"),
+                "prompt_head": first[:3000] if isinstance(first, str) else ""})
     model = body.get("model", "")
     auth_ok = hdr.get("x-api-key") == KEY or hdr.get("authorization") == f"Bearer {KEY}" or hdr.get("x-relay-key") == KEY
     if model == "mock-401" or not auth_ok:

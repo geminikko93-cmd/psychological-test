@@ -28,6 +28,7 @@ export async function renderProjects(page) {
           if (name === null) return;
           try { const r = await api.post("/api/projects", { name: name || "새 프로젝트" }); go("plan", r.project.id); } catch (e) { showError(e); }
         } }, "+ 새 프로젝트"),
+        h("button", { class: "primary", onclick: () => go("channel") }, "📺 주제 목록에서 시작"),
         h("button", { onclick: () => fileInput.click() }, "ZIP에서 프로젝트 가져오기"),
         h("button", { onclick: async () => {
           try { const r = await api.post("/api/examples/import", {}); toast("예제 프로젝트를 만들었습니다.", "ok"); go("plan", r.project.id); } catch (e) { showError(e); }

@@ -11,7 +11,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ai_client, ai_tasks, align, config, export, flow, jobs, sources, storage
+from . import ai_client, ai_tasks, align, channel, config, export, flow, jobs, sources, storage
 from . import audio as A
 from .jp_text import lint_project, mora_count, overlap_report, reading_hint, wrap_lines
 from .srt import build_srt, check_cues
@@ -130,7 +130,44 @@ async def projects():
 
 @app.post("/api/projects")
 async def new_project(body: dict):
-    return _with_status(storage.create_project(str(body.get("name") or "새 프로젝트")[:80]))
+    base = storage.empty_project(str(body.get("name") or "새 프로젝트")[:80])
+    base["idea"].update(channel.idea_from_profile())  # 채널 기본 설정으로 미리 채움
+    return _with_status(storage.create_project(base["name"], base))
+
+
+# ---------------------------------------------------------------- 채널·주제
+
+@app.get("/api/channel")
+async def get_channel():
+    data = channel.load()
+    # 주제와 연결된 프로젝트가 지워졌으면 표시만 정리
+    alive = {m["id"] for m in storage.list_projects()}
+    for t in data["topics"]:
+        t["live_project_ids"] = [x for x in t.get("project_ids", []) if x in alive]
+    return data
+
+
+@app.put("/api/channel")
+async def put_channel(body: dict):
+    data = body.get("channel") or {}
+    for t in data.get("topics") or []:
+        t.pop("live_project_ids", None)
+    return channel.save(data)
+
+
+@app.post("/api/channel/reseed")
+async def channel_reseed():
+    return channel.reseed()
+
+
+@app.post("/api/channel/topics")
+async def channel_add_topics(body: dict):
+    return channel.add_topics(str(body.get("text") or "").splitlines()[:500])
+
+
+@app.post("/api/channel/topics/{tid}/start")
+async def channel_start(tid: str):
+    return _with_status(channel.start_project(tid))
 
 
 @app.get("/api/projects/{pid}")

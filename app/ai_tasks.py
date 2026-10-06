@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 
-from . import ai_client, prompts, storage
+from . import ai_client, channel, prompts, storage
 from .jp_text import reading_hint
 from .util import UserError, new_id, now_iso
 
@@ -31,6 +31,15 @@ def extract_json(text: str) -> dict:
 
 def _s(v, limit: int = 4000) -> str:
     return str(v if v is not None else "").strip()[:limit]
+
+
+async def _call(user: str, job) -> dict:
+    """모든 AI 요청에 채널 기본 설정을 함께 보낸다(제작자가 정한 방침)."""
+    prof = channel.profile_block()
+    if prof:
+        user = ("## チャンネル設定(制作者が決めた方針。これに従う。韓国語で書かれている)\n"
+                + json.dumps(prof, ensure_ascii=False, indent=1) + "\n\n" + user)
+    return await ai_client.call(prompts.SYSTEM, user, job=job)
 
 
 def _usage_entry(task: str, res: dict) -> dict:
@@ -131,7 +140,7 @@ async def run_plan(project: dict, feedback: str, job) -> dict:
     hist = history_for(project.get("id"))
     prev = (project.get("plan_candidates") or {}).get("items") or []
     user = prompts.plan_prompt(project.get("idea") or {}, hist, feedback, prev if feedback or prev else None)
-    res = await ai_client.call(prompts.SYSTEM, user, job=job)
+    res = await _call(user, job)
     obj = extract_json(res["text"])
     cands = [norm_candidate(c, i) for i, c in enumerate(obj.get("candidates") or []) if isinstance(c, dict)]
     if not cands:
@@ -145,7 +154,7 @@ async def run_script(project: dict, notes: str, job) -> dict:
         raise UserError("먼저 기획 방향을 선택하세요.")
     hist = history_for(project.get("id"))
     user = prompts.script_prompt(project.get("idea") or {}, plan_input(project), hist, notes)
-    res = await ai_client.call(prompts.SYSTEM, user, job=job)
+    res = await _call(user, job)
     obj = extract_json(res["text"])
     scenes = [norm_scene(s) for s in (obj.get("scenes") or []) if isinstance(s, dict)]
     scenes = [s for s in scenes if s["lines"]]
@@ -173,7 +182,7 @@ async def run_partial(project: dict, scope: dict, preset: str, instruction: str,
     scene_ids = {s["scene_id"] for s in sv["scenes"]}
     hist = history_for(project.get("id")) if preset == "overlap" else history_for(project.get("id"), limit=5)
     user = prompts.partial_prompt(project.get("idea") or {}, plan_input(project), sv, scope, text, hist)
-    res = await ai_client.call(prompts.SYSTEM, user, job=job)
+    res = await _call(user, job)
     obj = extract_json(res["text"])
     allowed_lines = set(scope.get("line_ids") or [])
     allowed_scenes = set(scope.get("scene_ids") or [])
@@ -216,7 +225,7 @@ async def run_review(project: dict, job) -> dict:
     if not sv["scenes"]:
         raise UserError("검토할 대본이 없습니다.")
     pub = {k: (project.get("publish") or {}).get(k, "") for k in ("title", "description")}
-    res = await ai_client.call(prompts.SYSTEM, prompts.review_prompt(project.get("idea") or {}, sv, pub), job=job)
+    res = await _call(prompts.review_prompt(project.get("idea") or {}, sv, pub), job)
     obj = extract_json(res["text"])
     items = []
     for it in obj.get("items") or []:
@@ -235,7 +244,7 @@ async def run_publish(project: dict, job) -> dict:
     if not sv["scenes"]:
         raise UserError("대본이 있어야 게시 정보를 만들 수 있습니다.")
     platforms = (project.get("idea") or {}).get("platforms") or ["YouTube Shorts", "Instagram Reels"]
-    res = await ai_client.call(prompts.SYSTEM, prompts.publish_prompt(project.get("idea") or {}, plan_input(project), sv, platforms), job=job)
+    res = await _call(prompts.publish_prompt(project.get("idea") or {}, plan_input(project), sv, platforms), job)
     obj = extract_json(res["text"])
     return {"titles": [{"ja": _s(t.get("ja")), "ko": _s(t.get("ko")), "note_ko": _s(t.get("note_ko"))}
                        for t in (obj.get("titles") or []) if isinstance(t, dict)][:6],
@@ -263,7 +272,7 @@ async def run_flow_prompts(project: dict, clip_ids: list[str] | None, instructio
     only = [i for i in (clip_ids or []) if i in valid] or None
     user = prompts.flow_prompt(project.get("idea") or {}, plan_input(project), scenes, clip_view,
                                fl.get("style"), instruction, only)
-    res = await ai_client.call(prompts.SYSTEM, user, job=job)
+    res = await _call(user, job)
     obj = extract_json(res["text"])
     sb = obj.get("style_bible") if isinstance(obj.get("style_bible"), dict) else {}
     style = {"look_en": _s(sb.get("look_en")), "look_ko": _s(sb.get("look_ko")),

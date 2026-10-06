@@ -9,6 +9,7 @@ import { renderSubtitles } from "./pages/subtitles.js";
 import { renderSources } from "./pages/sources.js";
 import { renderExport } from "./pages/export.js";
 import { renderSettings } from "./pages/settings.js";
+import { renderChannel } from "./pages/channel.js";
 
 const STEPS = [
   ["plan", "1. 기획", renderPlan],
@@ -25,11 +26,12 @@ function parseHash() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts[0] === "p" && parts[1]) return { page: parts[2] || "plan", pid: parts[1] };
   if (parts[0] === "settings") return { page: "settings", pid: null };
+  if (parts[0] === "channel") return { page: "channel", pid: null };
   return { page: "projects", pid: null };
 }
 
 export function go(page, pid = state.project?.id) {
-  location.hash = page === "projects" ? "#/" : page === "settings" ? "#/settings" : `#/p/${pid}/${page}`;
+  location.hash = page === "projects" ? "#/" : page === "settings" ? "#/settings" : page === "channel" ? "#/channel" : `#/p/${pid}/${page}`;
 }
 window.__go = go;
 
@@ -38,7 +40,7 @@ async function onRoute() {
   try {
     await flush();
     if (route.pid && (!state.project || state.project.id !== route.pid)) await openProject(route.pid);
-    if (!route.pid && route.page === "projects") closeProject();
+    if (!route.pid && (route.page === "projects" || route.page === "channel")) closeProject();
   } catch (e) {
     showError(e);
     location.hash = "#/";
@@ -51,6 +53,7 @@ function renderSidebar() {
   const sb = clear(document.getElementById("sidebar"));
   sb.append(h("div", { class: "brand", onclick: () => go("projects") }, h("b", {}, "JP 숏폼 작업실"), h("small", {}, "기획 → 대본 → 음성 → 자막 → 소스 → CapCut")));
   sb.append(h("button", { class: `nav ${route.page === "projects" ? "active" : ""}`, onclick: () => go("projects") }, "📁 프로젝트 목록"));
+  sb.append(h("button", { class: `nav ${route.page === "channel" ? "active" : ""}`, onclick: () => go("channel") }, "📺 채널 · 주제"));
   if (state.project) {
     sb.append(h("div", { class: "proj-name", title: state.project.name }, state.project.name));
     const steps = state.status?.steps || {};
@@ -90,6 +93,7 @@ async function render() {
   try {
     if (route.page === "projects") await renderProjects(page);
     else if (route.page === "settings") await renderSettings(page, loadSettings);
+    else if (route.page === "channel") await renderChannel(page);
     else {
       const step = STEPS.find((s) => s[0] === route.page);
       if (step && state.project) await step[2](page);
