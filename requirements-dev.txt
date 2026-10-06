@@ -1,0 +1,4 @@
+# 개발·검증용
+pytest>=8
+edge-tts>=6.1   # tests/make_fixtures.py 의 검증용 일본어 음성 생성(타입캐스트 아님)
+playwright>=1.45

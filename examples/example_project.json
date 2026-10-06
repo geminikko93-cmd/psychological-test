@@ -1,0 +1,208 @@
+{
+ "name": "예제: 낯선 방에서 먼저 보는 것",
+ "idea": {
+  "topic": "(예제) 낯선 방에서 가장 먼저 눈이 가는 물건으로 해 보는 놀이형 질문",
+  "audience": "출퇴근 중 짧게 보는 20~30대 일본어 사용자",
+  "notes": "이 예제의 기획·대본은 프로그램 흐름을 보여주기 위해 사람이 작성한 샘플입니다(AI 생성 결과가 아님).",
+  "content_kind": "entertainment",
+  "target_seconds": 30,
+  "avoid": "동물 선택지, '진짜 성격' 같은 과장",
+  "platforms": [
+   "YouTube Shorts",
+   "Instagram Reels"
+  ]
+ },
+ "plan": {
+  "source": {
+   "candidate_id": "example",
+   "selected_at": "2026-10-06T00:00:00Z"
+  },
+  "approach_name_ko": "(예제) 상황 몰입형 선택",
+  "format_ko": "낯선 방에 들어선 1인칭 상황 → 먼저 눈이 가는 물건 선택 → 그 물건과 '시선의 습관'을 연결한 결과",
+  "content_kind": "entertainment",
+  "why_watch_ko": "상황에 들어가 직접 고르는 재미",
+  "first_scene_ko": "문이 열리는 1인칭 화면",
+  "first_line_ja": "ドアを開けると、知らない部屋がありました。",
+  "first_line_ko": "문을 열자, 모르는 방이 있었습니다.",
+  "structure_ko": "장면 1: 상황과 질문\n장면 2: 선택지와 고를 시간\n장면 3: 결과 3개\n장면 4: 오락용 고지와 댓글 질문",
+  "scene_count": 4,
+  "choices_use": true,
+  "choices_count": 3,
+  "choices_reason_ko": "방 안 물건 3개가 화면에서 구분하기 쉬움",
+  "payoff_ko": "성격 단정 대신 '먼저 보는 습관'이라는 작은 관찰로 결과를 제시",
+  "next_video_pull_ko": "같은 방의 다른 질문을 이어서 볼 수 있다는 기대(업로드 약속 표현은 쓰지 않음)",
+  "visuals_ko": "문, 창문, 시계, 책장 스톡 영상/사진",
+  "source_difficulty_ko": "쉬움",
+  "claims_ko": "오락용, 과학적 근거 주장 없음",
+  "risks_ko": "결과가 성격 진단처럼 들리지 않게",
+  "updated_at": "2026-10-06T00:00:00Z"
+ },
+ "script": {
+  "scenes": [
+   {
+    "id": "s_ex1",
+    "purpose": "훅: 낯선 방 상황 제시와 질문",
+    "visual": "문이 천천히 열리는 1인칭 영상 또는 빈 방 사진",
+    "search_keywords": [
+     "door opening pov",
+     "empty room",
+     "ドア 開く"
+    ],
+    "edit_intent": "첫 1초에 문이 열리는 움직임으로 시선 잡기",
+    "hold_ms": 0,
+    "hold_reason": "",
+    "fact_check": "",
+    "fact_note": "",
+    "no_source_needed": false,
+    "lines": [
+     {
+      "id": "l_ex0",
+      "display": "ドアを開けると、知らない部屋がありました。",
+      "tts": "ドアを開けると、知らない部屋がありました。",
+      "ko": "문을 열자, 모르는 방이 있었습니다.",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": "開け(ひらけ)、知ら(しら)、部屋(へや)"
+     },
+     {
+      "id": "l_ex1",
+      "display": "最初に目に入ったのは、どれですか。",
+      "tts": "最初に目に入ったのは、どれですか。",
+      "ko": "가장 먼저 눈에 들어온 것은 어느 것인가요?",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": "最初(さいしょ)、目に(めに)、入っ(いっっ)"
+     }
+    ]
+   },
+   {
+    "id": "s_ex2",
+    "purpose": "선택지 제시와 고를 시간",
+    "visual": "창문·시계·책장 세 장면을 빠르게 이어 붙이고 마지막에 세 개를 한 화면에",
+    "search_keywords": [
+     "window light",
+     "wall clock",
+     "bookshelf"
+    ],
+    "edit_intent": "선택지마다 1초씩 컷, 고르는 시간 동안 세 개를 정지 화면으로",
+    "hold_ms": 1500,
+    "hold_reason": "시청자가 고를 시간",
+    "fact_check": "",
+    "fact_note": "",
+    "no_source_needed": false,
+    "lines": [
+     {
+      "id": "l_ex2",
+      "display": "窓、時計、本棚。\n直感で選んでください。",
+      "tts": "窓、時計、本棚。直感で選んでください。",
+      "ko": "창문, 시계, 책장. 직감으로 골라 주세요.",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": "窓(まど)、時計(とけい)、本棚(ほんだな)、直感(ちょっかん)、選ん(えらん)"
+     }
+    ]
+   },
+   {
+    "id": "s_ex3",
+    "purpose": "결과 3개 — 고른 물건과 시선의 습관을 연결",
+    "visual": "각 결과마다 해당 물건 클로즈업",
+    "search_keywords": [
+     "window view",
+     "clock close up",
+     "old books"
+    ],
+    "edit_intent": "결과 문장과 같은 타이밍에 물건 클로즈업 전환",
+    "hold_ms": 0,
+    "hold_reason": "",
+    "fact_check": "",
+    "fact_note": "",
+    "no_source_needed": false,
+    "lines": [
+     {
+      "id": "l_ex3",
+      "display": "窓を選んだ人は、出口より先に景色を見る人です。",
+      "tts": "窓を選んだ人は、出口より先に景色を見る人です。",
+      "ko": "창문을 고른 사람은 출구보다 먼저 풍경을 보는 사람입니다.",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": "窓(まど)、選ん(えらん)、人(にん)、出口(でぐち)、先に(さきに)、景色(けしき)、見る(みる)"
+     },
+     {
+      "id": "l_ex4",
+      "display": "時計を選んだ人は、今日の予定がまだ頭に残っている人。",
+      "tts": "時計を選んだ人は、きょうの予定がまだ頭に残っている人。",
+      "ko": "시계를 고른 사람은 오늘 일정이 아직 머릿속에 남아 있는 사람.",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": "時計(とけい)、選ん(えらん)、人(にん)、今日(きょう)、予定(よてい)、頭(あたま)、残っ(のこっ)"
+     },
+     {
+      "id": "l_ex5",
+      "display": "本棚を選んだ人は、答えより手がかりが好きな人です。",
+      "tts": "本棚を選んだ人は、答えより手がかりが好きな人です。",
+      "ko": "책장을 고른 사람은 답보다 단서를 좋아하는 사람입니다.",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": "本棚(ほんだな)、選ん(えらん)、人(にん)、答え(こたえ)、手がかり(てがかり)、好き(すき)"
+     }
+    ]
+   },
+   {
+    "id": "s_ex4",
+    "purpose": "오락용 고지와 댓글 질문",
+    "visual": "세 물건을 다시 나란히, 텍스트 강조",
+    "search_keywords": [
+     "cozy room"
+    ],
+    "edit_intent": "마지막 문장 동안 화면 정지, 댓글 유도 텍스트",
+    "hold_ms": 0,
+    "hold_reason": "",
+    "fact_check": "",
+    "fact_note": "",
+    "no_source_needed": true,
+    "lines": [
+     {
+      "id": "l_ex6",
+      "display": "これは遊びのテストです。",
+      "tts": "これは遊びのテストです。",
+      "ko": "이것은 놀이용 테스트입니다.",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": "遊び(あそび)"
+     },
+     {
+      "id": "l_ex7",
+      "display": "あなたはどれでしたか。\nコメントで教えてください。",
+      "tts": "あなたはどれでしたか。コメントで教えてください。",
+      "ko": "당신은 어느 것이었나요? 댓글로 알려 주세요.",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": "教え(おしえ)"
+     }
+    ]
+   }
+  ],
+  "title_candidates": [],
+  "claims_level_ko": "오락용 놀이 질문. 근거 주장 없음.",
+  "self_check_ko": [],
+  "generated_at": null,
+  "updated_at": null,
+  "history": [],
+  "review": null,
+  "based_on_plan_at": "2026-10-06T00:00:00Z"
+ },
+ "publish": {
+  "title": "知らない部屋で、最初に見るのは？",
+  "description": "直感で選んでみてください。\nこれは遊びのテストです。",
+  "hashtags": "#心理テスト #直感テスト",
+  "credits_extra": "",
+  "ai_draft": null,
+  "entertainment_notice": true
+ },
+ "typecast": {
+  "voice": "(예제) 검증용 합성 음성 — 타입캐스트 음성 아님",
+  "credit_text": "",
+  "settings_memo": "",
+  "notes": "예제 음성은 프로그램 검증용으로 만든 합성 음성입니다. 실제 영상에는 타입캐스트에서 만든 음성을 넣으세요."
+ }
+}
