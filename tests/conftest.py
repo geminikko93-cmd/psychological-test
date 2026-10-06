@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 _TMP = Path(tempfile.mkdtemp(prefix="jpss_test_"))
 os.environ["JPSS_DATA_DIR"] = str(_TMP / "data")
 os.environ["JPSS_CONFIG_DIR"] = str(_TMP / "cfg")
+os.environ["JPSS_ENV_FILE"] = str(_TMP / "no.env")  # 실제 프로젝트 폴더의 .env(진짜 키)를 시험에서 읽지 않음
 _models = os.environ.get("JPSS_TEST_MODELS")  # 이미 받은 whisper 모델 폴더 재사용(선택)
 
 FIX = ROOT / "tests" / "fixtures"

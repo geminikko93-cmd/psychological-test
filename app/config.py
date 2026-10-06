@@ -43,6 +43,12 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 SECRETS_FILE = CONFIG_DIR / "secrets.dat"
+ENV_FILE = Path(os.environ.get("JPSS_ENV_FILE") or (Path(__file__).resolve().parent.parent / ".env"))
+
+# .env에서 읽는 API 키 이름(앞에 있을수록 우선)과 인증 방식.
+# ANTHROPIC_AUTH_TOKEN은 Claude Code와 같은 의미(Authorization: Bearer)로 보낸다.
+ENV_KEY_NAMES = (("ANTHROPIC_AUTH_TOKEN", "bearer"), ("APIKEY", "bearer"), ("API_KEY", "bearer"),
+                 ("ANTHROPIC_API_KEY", "x-api-key"))
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "ai": {
@@ -55,7 +61,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "send_version_header": True,
         "model": "",
         "max_tokens": 8000,
-        "timeout_s": 180,
+        "timeout_s": 300,
         "stream": False,
         "extra_body_json": "",
         "price_input_per_mtok": None,
@@ -95,6 +101,44 @@ def _deep_merge(base: dict, extra: dict) -> dict:
     return out
 
 
+def load_env() -> dict:
+    """프로젝트 폴더의 .env(KEY=VALUE)를 읽는다. 파일을 고치면 재시작 없이 다음 요청부터 반영된다."""
+    out: dict[str, str] = {}
+    try:
+        text = ENV_FILE.read_text(encoding="utf-8-sig")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip().removeprefix("export ").strip()
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        elif " #" in v:
+            v = v.split(" #", 1)[0].strip()
+        if k:
+            out[k] = v
+    return out
+
+
+def env_ai() -> dict:
+    """.env의 AI 연결 값: key, key_name, auth, base_url, model (없으면 빈 값)."""
+    env = load_env()
+    key, key_name, auth = "", "", ""
+    for name, a in ENV_KEY_NAMES:
+        if env.get(name, "").strip() and env[name].strip() != "YOUR_API_KEY":
+            key, key_name, auth = env[name].strip(), name, a
+            break
+    if env.get("JPSS_AUTH") in ("x-api-key", "bearer"):
+        auth = env["JPSS_AUTH"]
+    return {"key": key, "key_name": key_name, "auth": auth,
+            "base_url": env.get("ANTHROPIC_BASE_URL", "").strip(),
+            "model": (env.get("ANTHROPIC_MODEL") or env.get("JPSS_MODEL") or "").strip()}
+
+
 def load_settings() -> dict:
     with _lock:
         if SETTINGS_FILE.exists():
@@ -104,7 +148,23 @@ def load_settings() -> dict:
                 data = {}
         else:
             data = {}
-        return _deep_merge(DEFAULT_SETTINGS, data)
+        merged = _deep_merge(DEFAULT_SETTINGS, data)
+    # 화면에서 비워 둔 주소·모델은 .env 값으로 채운다(비밀값 아님)
+    e = env_ai()
+    if not merged["ai"].get("base_url") and e["base_url"]:
+        merged["ai"]["base_url"] = e["base_url"]
+    if not merged["ai"].get("model") and e["model"]:
+        merged["ai"]["model"] = e["model"]
+    return merged
+
+
+def ai_key() -> tuple[str, str, str | None]:
+    """(키, 출처, .env가 정한 인증 방식). .env 키가 화면에서 저장한 키보다 우선한다."""
+    e = env_ai()
+    if e["key"]:
+        return e["key"], f".env ({e['key_name']})", e["auth"]
+    k = load_secrets().get("ai_api_key") or ""
+    return k, ("설정 화면" if k else ""), None
 
 
 def save_settings(settings: dict) -> dict:
@@ -208,8 +268,14 @@ def save_secrets(updates: dict) -> None:
 def secret_status() -> dict:
     s = load_secrets()
     headers = s.get("ai_extra_headers") or {}
+    key, source, env_auth = ai_key()
     return {
-        "ai_api_key": bool(s.get("ai_api_key")),
+        "ai_api_key": bool(key),
+        "ai_key_source": source,
+        "ai_env_auth": env_auth,
+        "env_file": str(ENV_FILE),
+        "env_file_exists": ENV_FILE.exists(),
+        "stored_ai_api_key": bool(s.get("ai_api_key")),
         "ai_extra_header_names": sorted(headers.keys()) if isinstance(headers, dict) else [],
         "pexels_key": bool(s.get("pexels_key")),
         "pixabay_key": bool(s.get("pixabay_key")),
@@ -221,6 +287,9 @@ def all_secret_values() -> list[str]:
     """내보내기·저장 검사용: 현재 저장된 모든 비밀 문자열."""
     s = load_secrets()
     vals: list[str] = []
+    ek = env_ai()["key"]
+    if ek:
+        vals.append(ek)
     for k, v in s.items():
         if isinstance(v, str) and v:
             vals.append(v)

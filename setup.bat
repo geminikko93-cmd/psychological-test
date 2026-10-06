@@ -18,6 +18,7 @@ if errorlevel 1 ( echo 가상환경을 만들지 못했습니다. & pause & exit
 .venv\Scripts\python -m pip install --upgrade pip
 .venv\Scripts\python -m pip install -r requirements.txt
 if errorlevel 1 ( echo 패키지 설치에 실패했습니다. 인터넷 연결을 확인하고 다시 실행하세요. & pause & exit /b 1 )
+if not exist .env ( copy /y .env.example .env >nul & echo .env 파일을 만들었습니다. 메모장으로 열어 YOUR_API_KEY 자리에 API 키를 넣으세요. )
 echo.
 echo 설치가 끝났습니다. start.bat 을 더블클릭해 실행하세요.
 echo (선택) 음성 인식 보조 자막 정렬을 쓰려면 install_whisper.bat 을 실행하세요.

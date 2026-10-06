@@ -28,13 +28,22 @@ export async function renderSettings(page, reload) {
   const customName = field("인증 헤더 이름", bindInput(ai, "custom_header_name", null, { placeholder: "예: X-Relay-Key" }));
   customName.style.display = ai.auth === "custom" ? "" : "none";
 
+  const modelList = h("datalist", { id: "relay-models" },
+    ["claude-opus-4-8", "claude-sonnet-5", "claude-fable-5", "claude-haiku-4-5-20251001"].map((m) => h("option", { value: m })));
+  const envBox = sec.ai_key_source?.startsWith(".env")
+    ? h("div", { class: "note ok" }, h("b", {}, "API 키: .env 파일에서 읽는 중 "), `(${sec.ai_key_source}, ${sec.ai_env_auth === "bearer" ? "Authorization: Bearer" : "x-api-key"}로 전송)`,
+        h("div", { class: "small" }, `파일 위치: ${sec.env_file} — 키를 바꾸려면 이 파일을 메모장으로 고치세요. 아래 '인증 방식'과 화면에서 저장한 키보다 .env가 우선합니다.`))
+    : h("div", { class: "note warn" }, h("b", {}, ".env에 API 키가 없습니다. "),
+        sec.env_file_exists ? `${sec.env_file} 를 메모장으로 열어 ANTHROPIC_AUTH_TOKEN= 뒤에 키를 넣고 저장하세요.` : `프로그램 폴더의 .env.example 을 복사해 .env 로 저장한 뒤 ANTHROPIC_AUTH_TOKEN= 뒤에 키를 넣으세요. (${sec.env_file})`,
+        h("div", { class: "small" }, "저장 후 [연결 테스트]를 누르면 됩니다(프로그램 재시작 불필요)."));
   page.append(section("AI 연결 (앤트로픽 API 중개서버)",
     h("div", { class: "note" }, "요청 규격: Anthropic Messages (POST {서버 주소}{경로}, content 블록 응답). 사용자 확인에 따라 이 규격만 지원합니다. OpenAI 호환 형식으로 응답하면 오류로 알려 드립니다."),
+    envBox, modelList,
     h("div", { class: "grid2" },
       field("서버 기본 주소", bindInput(ai, "base_url", null, { placeholder: "https://... (중개서버 주소)" })),
       field("요청 경로", bindInput(ai, "path", null, { placeholder: "/v1/messages" }))),
     h("div", { class: "grid3" },
-      field("모델 식별자", bindInput(ai, "model", null, { placeholder: "중개서버에서 쓰는 모델 이름" }), "중개서버가 안내한 모델 이름을 그대로 넣으세요."),
+      field("모델 식별자", (() => { const el = bindInput(ai, "model", null, { placeholder: "중개서버에서 쓰는 모델 이름" }); el.setAttribute("list", "relay-models"); return el; })(), "목록에서 고르거나 직접 입력. 비워 두면 .env의 ANTHROPIC_MODEL을 씁니다."),
       field("인증 방식", select([["x-api-key", "x-api-key 헤더"], ["bearer", "Authorization: Bearer"], ["custom", "사용자 지정 헤더"], ["none", "인증 없음"]], ai.auth, (v) => { ai.auth = v; customName.style.display = v === "custom" ? "" : "none"; })),
       customName),
     h("div", { class: "grid3" },
@@ -52,17 +61,18 @@ export async function renderSettings(page, reload) {
       "messages·model·system은 덮어쓸 수 없습니다."),
     h("div", { class: "row" }, h("button", { class: "primary", onclick: () => saveSettings() }, "연결 설정 저장")),
     h("hr"),
-    field(`API 키 (${sec.ai_api_key ? "저장됨" : "없음"}${sec.encrypted ? " · Windows 계정으로 암호화 저장" : ""})`, keyIn,
-      "키는 이 PC의 설정 폴더에만 저장되며 화면·프로젝트·내보내기 파일·로그에 들어가지 않습니다."),
+    h("details", {}, h("summary", {}, ".env 대신 화면에서 키 저장(선택)"),
+    field(`API 키 (${sec.stored_ai_api_key ? "저장됨" : "없음"}${sec.encrypted ? " · Windows 계정으로 암호화 저장" : ""})`, keyIn,
+      ".env에 키가 있으면 .env가 우선합니다. 키는 화면·프로젝트·내보내기 파일·로그에 들어가지 않습니다."),
     h("div", { class: "row" },
       h("button", { onclick: async () => {
         if (!keyIn.value.trim()) { toast("키를 입력하세요.", "info"); return; }
         try { const o = await api.put("/api/secrets", { ai_api_key: keyIn.value.trim() }); keyIn.value = ""; state.settings.secrets = o.secrets; toast("API 키를 저장했습니다.", "ok"); reload && reload(); } catch (e) { showError(e); }
       } }, "키 저장"),
-      sec.ai_api_key ? h("button", { class: "danger", onclick: async () => {
+      sec.stored_ai_api_key ? h("button", { class: "danger", onclick: async () => {
         if (!(await confirmBox("키 삭제", "저장된 API 키를 지웁니다.", "삭제", true))) return;
         const o = await api.put("/api/secrets", { ai_api_key: "" }); state.settings.secrets = o.secrets; toast("키를 지웠습니다.", "ok"); reload && reload();
-      } }, "키 삭제") : null),
+      } }, "키 삭제") : null)),
     field("추가 헤더(중개서버가 요구하는 경우, 비밀값으로 저장)", hdrIn),
     h("div", { class: "row" }, h("button", { onclick: async () => {
       const obj = {};

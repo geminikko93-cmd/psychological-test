@@ -37,8 +37,9 @@ def check_ready() -> None:
         missing.append("서버 기본 주소")
     if not (s.get("model") or "").strip():
         missing.append("모델 식별자")
-    if s.get("auth") != "none" and not sec.get("ai_api_key"):
-        missing.append("API 키")
+    key, _, _ = config.ai_key()
+    if s.get("auth") != "none" and not key:
+        missing.append("API 키(.env의 ANTHROPIC_AUTH_TOKEN 또는 설정 화면)")
     if s.get("auth") == "custom" and not (s.get("custom_header_name") or "").strip():
         missing.append("인증 헤더 이름")
     if missing:
@@ -58,8 +59,8 @@ def _build(system: str, messages: list[dict], max_tokens: int | None, stream: bo
     headers = {"content-type": "application/json", "accept": "application/json"}
     if s.get("send_version_header", True) and s.get("anthropic_version"):
         headers["anthropic-version"] = str(s["anthropic_version"]).strip()
-    key = sec.get("ai_api_key") or ""
-    auth = s.get("auth", "x-api-key")
+    key, _, env_auth = config.ai_key()
+    auth = env_auth or s.get("auth", "x-api-key")
     if auth == "x-api-key":
         headers["x-api-key"] = key
     elif auth == "bearer":
@@ -109,7 +110,7 @@ def _error_from_response(status: int, text: str, headers: httpx.Headers) -> User
     detail = _redact(f" (서버 메시지: {emsg[:300]})" if emsg else "")
     retry_after = headers.get("retry-after")
     if status == 401 or etype == "authentication_error":
-        return UserError("인증에 실패했습니다." + detail, "API 키와 인증 방식(x-api-key / Bearer / 사용자 지정 헤더)을 확인하세요.", 502)
+        return UserError("인증에 실패했습니다." + detail, "API 키를 확인하세요(.env의 ANTHROPIC_AUTH_TOKEN 값, 앞뒤 공백·따옴표 주의). 화면에서 키를 넣었다면 인증 방식(x-api-key / Bearer)도 확인하세요.", 502)
     if status == 403 or etype == "permission_error":
         return UserError("이 키로는 요청 권한이 없습니다." + detail, "중개서버에서 이 모델·기능 사용이 허용되는지 확인하세요.", 502)
     if status == 404 or etype == "not_found_error":
