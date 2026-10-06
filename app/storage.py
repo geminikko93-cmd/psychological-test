@@ -13,7 +13,7 @@ from . import config
 from .util import (UserError, atomic_write_text, check_project_id, inside, new_project_id,
                    now_iso, stable_hash)
 
-SCHEMA = 1
+SCHEMA = 2
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 BACKUP_INTERVAL_S = 180
@@ -111,10 +111,47 @@ def load_project(pid: str) -> dict:
     if not f.exists():
         raise UserError("프로젝트를 찾을 수 없습니다.", status=404)
     try:
-        return json.loads(f.read_text(encoding="utf-8"))
+        p = json.loads(f.read_text(encoding="utf-8"))
     except ValueError as e:
         raise UserError("프로젝트 파일이 손상되었습니다.",
                         "프로젝트 폴더의 backups 안에 있는 최근 백업으로 복원하세요.") from e
+    if int(p.get("schema") or 1) < SCHEMA:
+        with _lock(pid):
+            raw = f.read_text(encoding="utf-8")
+            p = json.loads(raw)
+            if int(p.get("schema") or 1) < SCHEMA:
+                # 변환 전 원본을 그대로 백업(내용 손실 없이 되돌릴 수 있게)
+                bdir = _backup_dir(pid)
+                atomic_write_text(bdir / f"project_{datetime.now().strftime('%Y%m%d_%H%M%S')}_before-migration-v{SCHEMA}.json", raw)
+                p = migrate(p)
+                atomic_write_text(f, json.dumps(p, ensure_ascii=False, indent=1))
+    return p
+
+
+def migrate(p: dict) -> dict:
+    """이전 버전 프로젝트를 현재 구조로 변환. 기존 내용은 바꾸지 않고 빠진 기준 정보만 채운다."""
+    from .subs_merge import ensure_src, line_texts
+
+    p = json.loads(json.dumps(p))
+    script = p.setdefault("script", {})
+    # 대본이 어떤 기획을 바탕으로 했는지 기록이 없으면, 지금 기획을 기준으로 본다(이후 기획 변경부터 감지)
+    if script.get("scenes") and p.get("plan") and not script.get("based_on_plan_hash"):
+        script["based_on_plan_hash"] = plan_hash(p)
+    # 예전 프로젝트에 Flow 클립이 있으면 제작 방식을 Flow로 기록(기존 동작 유지)
+    if (p.get("flow") or {}).get("clips") and not (p.get("production") or {}).get("source_mode"):
+        p["production"] = {"source_mode": "flow"}
+    subs = p.setdefault("subtitles", {})
+    subs.setdefault("removed", [])
+    cues = subs.get("cues") or []
+    if cues:
+        texts = line_texts(p)
+        consistent = subs.get("based_on_display_hash") in (None, display_hash(p))
+        ensure_src(cues, texts)
+        if consistent and not subs.get("line_texts"):
+            subs["line_texts"] = texts
+    p["schema"] = SCHEMA
+    p.setdefault("migrations", []).append({"to": SCHEMA, "at": now_iso()})
+    return p
 
 
 def _assert_no_secrets(text: str) -> None:
@@ -260,6 +297,52 @@ def display_hash(project: dict) -> str:
 STEP_LABELS = {"plan": "기획", "script": "대본", "audio": "음성", "subtitles": "자막",
                "sources": "영상소스", "export": "내보내기"}
 
+# ---------------------------------------------------------------- 단계별 기반 버전(무엇이 바뀌면 어떤 단계가 최신이 아닌지)
+#  기획 내용        → 대본(based_on_plan_hash)
+#  TTS 낭독 문구    → 원본 음성(script_tts_hash)  ※ 한국어 의미·메모·화면 표시만 바꾸면 음성은 그대로 유효
+#  원본 음성        → 처리 음성(source_sha)
+#  처리 음성·대본 문구 → 자막(based_on_audio_version, based_on_display_hash)
+#  자막 시간        → Flow 클립 계획(based_on)
+#  위 모든 결과물   → 내보내기(last_export.basis)
+
+PLAN_META_KEYS = ("updated_at", "source", "selected_at")
+
+
+def plan_hash(project: dict) -> str | None:
+    plan = project.get("plan")
+    if not plan:
+        return None
+    return stable_hash({k: v for k, v in plan.items() if k not in PLAN_META_KEYS})
+
+
+def audio_mismatch(p: dict) -> dict:
+    """원본 음성이 현재 TTS 낭독문과 다른지(음성을 넣은 뒤 낭독문이 바뀜), 사용자가 예외로 확인했는지."""
+    orig = (p.get("audio") or {}).get("original") or {}
+    cur = tts_hash(p)
+    mismatch = bool(orig) and bool(orig.get("script_tts_hash")) and orig.get("script_tts_hash") != cur
+    ack = (p.get("audio") or {}).get("mismatch_ack") or {}
+    acknowledged = mismatch and ack.get("tts_hash") == cur and ack.get("audio_sha") == orig.get("sha256") and bool(ack.get("reason"))
+    return {"mismatch": mismatch, "acknowledged": acknowledged, "ack": ack if acknowledged else {}}
+
+
+def export_basis(p: dict) -> str:
+    """내보내기 결과물에 영향을 주는 내용의 지문. 내보낸 뒤 이것이 바뀌면 '다시 내보내기 필요'."""
+    audio = p.get("audio") or {}
+    subs = p.get("subtitles") or {}
+    pub = p.get("publish") or {}
+    return stable_hash({
+        "script": [[ln.get("id"), ln.get("display"), ln.get("tts"), ln.get("ko")] for ln in all_lines(p)],
+        "orig": (audio.get("original") or {}).get("sha256"),
+        "proc": (audio.get("processed") or {}).get("sha256") or (audio.get("processed") or {}).get("file"),
+        "cues": [[c.get("text"), c.get("start"), c.get("end")] for c in subs.get("cues") or []],
+        "sources": [[i.get("id"), i.get("file"), i.get("scene_id"), i.get("credit_text")] for i in (p.get("sources") or {}).get("items", [])
+                    if i.get("status") == "acquired"],
+        "clips": [[c.get("id"), c.get("item_id"), c.get("start"), c.get("end"), c.get("duration"), c.get("prompt_en")]
+                  for c in (p.get("flow") or {}).get("clips") or []],
+        "publish": [pub.get("title"), pub.get("description"), pub.get("hashtags"), pub.get("credits_extra")],
+        "typecast": (p.get("typecast") or {}).get("credit_text"),
+    })
+
 
 def compute_status(p: dict) -> dict:
     steps: dict[str, dict] = {}
@@ -267,22 +350,30 @@ def compute_status(p: dict) -> dict:
     steps["plan"] = {"state": "done" if plan else "todo",
                      "notes": [] if plan else ["기획 방향을 선택하세요."]}
     lines = all_lines(p)
+    script = p.get("script") or {}
     script_ok = bool(lines) and all((ln.get("tts") or "").strip() and (ln.get("display") or "").strip() for ln in lines)
     s_notes = []
     if not lines:
         s_notes.append("대본이 아직 없습니다.")
     elif not script_ok:
         s_notes.append("화면 표시 또는 TTS 일본어가 비어 있는 줄이 있습니다.")
-    steps["script"] = {"state": "done" if script_ok else "todo", "notes": s_notes}
+    s_state = "done" if script_ok else "todo"
+    if lines and plan and script.get("based_on_plan_hash") and script.get("based_on_plan_hash") != plan_hash(p):
+        s_state = "stale" if script_ok else s_state
+        s_notes.insert(0, "대본을 만든 뒤 기획 내용이 바뀌었습니다. 필요한 부분을 다시 만들거나, 지금 대본을 유지(확인)하세요.")
+    steps["script"] = {"state": s_state, "notes": s_notes}
 
     audio = p.get("audio") or {}
     orig = audio.get("original")
     a_state, a_notes = "todo", []
+    mm = audio_mismatch(p)
     if orig:
         a_state = "done"
-        if orig.get("script_tts_hash") and orig.get("script_tts_hash") != tts_hash(p):
+        if mm["mismatch"] and not mm["acknowledged"]:
             a_state = "stale"
-            a_notes.append("음성을 넣은 뒤 TTS 낭독문이 바뀌었습니다. 타입캐스트에서 다시 생성하거나, 바뀐 부분만 다시 녹음하세요.")
+            a_notes.append("음성을 넣은 뒤 TTS 낭독문이 바뀌었습니다. 타입캐스트에서 다시 생성하거나, 이 음성을 그대로 쓸 이유를 기록하세요.")
+        elif mm["acknowledged"]:
+            a_notes.append(f"대본과 다른 음성을 사용자가 확인하고 사용 중: {mm['ack'].get('reason', '')}")
         proc = audio.get("processed")
         if not proc:
             a_notes.append("무음 정리를 아직 적용하지 않았습니다(원본을 그대로 쓰려면 '원본 그대로 사용'을 누르세요).")
@@ -318,11 +409,15 @@ def compute_status(p: dict) -> dict:
     clips = fl.get("clips") or []
     clip_scenes = {c.get("scene_id") for c in clips}
 
+    from .flow import scene_mode
+
     def scene_ok(sc):
-        if sc.get("no_source_needed"):
+        mode = scene_mode(p, sc)
+        if sc.get("no_source_needed") or mode == "text":
             return True
-        if sc.get("id") in clip_scenes:
-            return all(c.get("item_id") in acquired_items for c in clips if c.get("scene_id") == sc.get("id"))
+        if mode == "flow":
+            mine = [c for c in clips if c.get("scene_id") == sc.get("id")]
+            return bool(mine) and all(c.get("item_id") in acquired_items for c in mine)
         return sc.get("id") in acquired
 
     missing = [i + 1 for i, sc in enumerate(scenes) if not scene_ok(sc)]
@@ -345,8 +440,20 @@ def compute_status(p: dict) -> dict:
 
     pub = p.get("publish") or {}
     pub_ok = bool(pub.get("title")) and bool(pub.get("description"))
-    steps["export"] = {"state": "done" if (pub_ok and p.get("last_export")) else "todo",
-                       "notes": [] if pub_ok else ["게시 제목과 설명문을 작성하세요."]}
+    last = p.get("last_export") or {}
+    e_notes = [] if pub_ok else ["게시 제목과 설명문을 작성하세요."]
+    if mm["mismatch"] and not mm["acknowledged"]:
+        e_state = "todo"
+        e_notes.insert(0, "음성이 현재 대본(TTS)과 달라 내보낼 수 없습니다.")
+    elif last and last.get("basis") == export_basis(p) and pub_ok:
+        e_state = "done"
+    elif last:
+        e_state = "stale"
+        e_notes.insert(0, "마지막으로 내보낸 뒤 바뀐 내용이 있습니다. 다시 내보내세요."
+                       if last.get("basis") else "이전 버전에서 내보낸 기록입니다. 최신 내용으로 다시 내보내세요.")
+    else:
+        e_state = "todo"
+    steps["export"] = {"state": e_state, "notes": e_notes}
 
     order = [("plan", "기획 방향을 정하세요"), ("script", "대본을 완성하세요"),
              ("audio", "음성을 넣고 무음 정리를 하세요"), ("subtitles", "자막 시간을 맞추세요"),
@@ -358,4 +465,5 @@ def compute_status(p: dict) -> dict:
             nxt = (steps[key]["notes"][0] if st == "stale" and steps[key]["notes"] else label)
             nxt = f"[{STEP_LABELS[key]}] {nxt}"
             break
-    return {"steps": steps, "next": nxt, "tts_hash": tts_hash(p), "display_hash": display_hash(p)}
+    return {"steps": steps, "next": nxt, "tts_hash": tts_hash(p), "display_hash": display_hash(p),
+            "plan_hash": plan_hash(p), "audio_mismatch": mm["mismatch"], "audio_mismatch_ack": mm["acknowledged"]}

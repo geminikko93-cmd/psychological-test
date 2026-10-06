@@ -1,5 +1,5 @@
 import { api, onJobUpdate, cancelJob } from "./api.js";
-import { state, onState, openProject, closeProject, flush } from "./state.js";
+import { state, onState, openProject, closeProject, flush, confirmLeave } from "./state.js";
 import { h, clear, badge, showError } from "./ui.js";
 import { renderProjects } from "./pages/projects.js";
 import { renderPlan } from "./pages/plan.js";
@@ -16,7 +16,7 @@ const STEPS = [
   ["script", "2. 대본", renderScript],
   ["audio", "3. 음성", renderAudio],
   ["subtitles", "4. 자막", renderSubtitles],
-  ["sources", "5. 영상 (Flow)", renderSources],
+  ["sources", "5. 영상소스", renderSources],
   ["export", "6. 게시·내보내기", renderExport],
 ];
 
@@ -35,10 +35,20 @@ export function go(page, pid = state.project?.id) {
 }
 window.__go = go;
 
+let lastHash = location.hash;
 async function onRoute() {
-  route = parseHash();
+  const next = parseHash();
+  // 화면 이동·프로젝트 전환 전에 미저장 변경을 저장. 실패하면 이동할지 묻는다.
+  if (state.project && (state.dirty || state.saving)) {
+    const ok = await flush();
+    if (!ok && !(await confirmLeave())) {
+      history.replaceState(null, "", lastHash);
+      return;
+    }
+  }
+  lastHash = location.hash;
+  route = next;
   try {
-    await flush();
     if (route.pid && (!state.project || state.project.id !== route.pid)) await openProject(route.pid);
     if (!route.pid && (route.page === "projects" || route.page === "channel")) closeProject();
   } catch (e) {

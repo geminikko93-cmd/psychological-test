@@ -1,11 +1,11 @@
-// Google Flow(Gemini Omni Flash 1.1) 클립 계획·프롬프트·생성 영상 연결
+// Google Flow 클립 계획·프롬프트·생성 영상 연결 (모델명·허용 길이는 서버 /api/flow/config 한 곳에서 받음)
 import { api, mediaUrl } from "../api.js";
 import { state, changed, flush } from "../state.js";
 import { h, section, field, bindInput, select, confirmBox, toast, empty, fmtSec, copyText, showError } from "../ui.js";
 import { runAi, aiReady } from "../aiflow.js";
 import { rerender } from "../nav.js";
 
-const DURS = [4, 6, 8, 10];
+let CFG = { durations: [], model_label: "", product_label: "Google Flow", aspect: "9:16" };
 const MODE = { text: "텍스트로 영상", first_frame: "첫 프레임 이미지 사용", ingredients: "재료(참조 이미지) 사용" };
 
 function flowState() {
@@ -20,10 +20,14 @@ async function planClips(confirmDrop = true) {
   await flush();
   try {
     const r = await api.post(`/api/projects/${p.id}/flow/plan`);
-    const lost = r.dropped.filter((d) => d.had_prompt || d.item_id);
+    const current = new Set((fl.clips || []).map((c) => c.id));
+    const lost = r.dropped.filter((d) => current.has(d.id) && (d.had_prompt || d.item_id));
     if (confirmDrop && lost.length && !(await confirmBox("클립 계획 다시 계산",
       `시간이 바뀌어 기존 클립 ${lost.length}개의 구간이 달라집니다.\n그 클립의 프롬프트·연결 영상은 '이전 클립'으로 보관되고, 새 클립은 프롬프트를 다시 만들어야 합니다.`, "다시 계산"))) return;
-    if (lost.length) fl.previous_clips = [...(fl.previous_clips || []), ...fl.clips.filter((c) => lost.some((d) => d.id === c.id))].slice(-30);
+    // 이번 계획에 없는 클립(다른 제작 방식으로 바꾼 장면 등)은 프롬프트·파일 연결과 함께 보관, 다시 Flow로 돌아오면 되살림
+    const keptIds = new Set(r.clips.map((c) => c.id));
+    const pool = [...(fl.previous_clips || []), ...fl.clips].filter((c) => !keptIds.has(c.id));
+    fl.previous_clips = [...new Map(pool.map((c) => [c.id, c])).values()].slice(-60);
     Object.assign(fl, { clips: r.clips, based_on: r.based_on, timing: r.timing, planned_at: new Date().toISOString() });
     changed(true);
     toast(`클립 ${r.clips.length}개를 계획했습니다(${r.timing === "실제" ? "최종 자막 시간 기준" : "대본 길이로 추정한 시간"}).`, "ok");
@@ -36,7 +40,7 @@ async function makePrompts(clipIds, instruction) {
   const targets = clipIds ? fl.clips.filter((c) => clipIds.includes(c.id)) : fl.clips;
   if (targets.some((c) => c.prompt_en) && !(await confirmBox("프롬프트 다시 만들기",
     "이미 있는 프롬프트는 바뀝니다(이전 프롬프트는 클립마다 1개씩 보관됩니다).", "만들기"))) return;
-  const r = await runAi("flow", { clip_ids: clipIds, instruction });
+  const r = await runAi("flow", { clip_ids: clipIds, instruction }, { guard: () => JSON.stringify([fl.style, fl.clips.map((c) => [c.id, c.prompt_en, c.duration])]), what: "Flow 프롬프트·클립 길이" });
   if (!r) return;
   if (!fl.style?.look_en || !clipIds) fl.style = r.style;
   for (const out of r.clips) {
@@ -52,6 +56,7 @@ async function makePrompts(clipIds, instruction) {
 
 export async function renderFlow(page) {
   const p = state.project;
+  CFG = await api.get("/api/flow/config");
   const fl = flowState();
   const scenes = p.script.scenes;
   const items = p.sources?.items || [];
@@ -60,7 +65,7 @@ export async function renderFlow(page) {
   const instr = { text: "" };
   page.append(section("클립 계획",
     h("div", { class: "note" },
-      "Flow의 Gemini Omni Flash 1.1은 4·6·8·10초 클립을 만듭니다. 각 장면의 내레이션 구간을 문장 경계에서 나눠, 구간을 덮는 가장 짧은 길이를 고릅니다(남는 꼬리는 CapCut에서 잘라냄). ",
+      `${CFG.product_label}은(는) ${CFG.durations.join("·")}초 클립을 만듭니다. 제작 방식이 'Flow'인 장면만 클립을 계획합니다. 각 장면의 내레이션 구간을 문장 경계에서 나눠, 구간을 덮는 가장 짧은 길이를 고릅니다(남는 꼬리는 CapCut에서 잘라냄). `,
       "Flow 사이트에서 직접 생성합니다(자동 로그인·비공식 연동 없음)."),
     st?.notes?.length && fl.clips?.length ? h("div", { class: "muted small" }, st.notes.join(" · ")) : null,
     h("div", { class: "row" },
@@ -124,7 +129,7 @@ function clipCard(c, sc, items) {
       h("b", {}, `클립 ${c.index_in_scene}`),
       h("span", { class: "tag" }, `배치 ${fmtSec(c.start)} → ${fmtSec(c.end)} · 필요 ${c.need_s}초 (${c.timing})`),
       h("span", {}, "Flow 길이 "),
-      select(DURS.map((d) => [String(d), `${d}초`]), String(c.duration), (v) => { c.duration = Number(v); c.duration_manual = true; changed(true); rerender(); }),
+      select(CFG.durations.map((d) => [String(d), `${d}초`]), String(c.duration), (v) => { c.duration = Number(v); c.duration_manual = true; changed(true); rerender(); }),
       item ? h("span", { class: "badge ok" }, "영상 넣음") : c.prompt_en ? h("span", { class: "badge todo" }, "프롬프트만") : h("span", { class: "badge todo" }, "프롬프트 없음")),
     tooShort ? h("div", { class: "note warn" }, `선택한 ${c.duration}초가 필요한 ${c.need_s}초보다 짧습니다. 더 긴 길이를 고르거나 [클립 계획 다시 계산]을 누르세요.`) : null,
     durChanged ? h("div", { class: "note warn" }, `프롬프트는 ${c.prompt_for_duration}초 기준으로 쓰였습니다. 길이를 바꿨으니 이 클립 프롬프트를 다시 만드는 것을 권장합니다.`) : null,
@@ -132,7 +137,7 @@ function clipCard(c, sc, items) {
     field("Flow 프롬프트 (영어 — Flow에 붙여 넣기)", ta),
     h("div", { class: "row" },
       h("button", { class: "small primary", disabled: !c.prompt_en, onclick: () => copyText(c.prompt_en, "프롬프트") }, "프롬프트 복사"),
-      h("span", { class: "muted small" }, `Flow 설정: Gemini Omni Flash 1.1 · 세로(9:16) · ${c.duration}초 · ${MODE[c.mode] || "텍스트로 영상"}`)),
+      h("span", { class: "muted small" }, `Flow 설정: ${CFG.model_label} · 세로(${CFG.aspect}) · ${c.duration}초 · ${MODE[c.mode] || "텍스트로 영상"}`)),
     c.prompt_ko ? h("div", { class: "ko small" }, "의미: ", c.prompt_ko) : null,
     c.beats_ko ? h("div", { class: "small" }, "진행: ", c.beats_ko) : null,
     c.mode_note_ko ? h("div", { class: "muted small" }, "모드 이유: ", c.mode_note_ko) : null,

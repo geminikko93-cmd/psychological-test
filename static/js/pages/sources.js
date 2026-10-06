@@ -4,18 +4,54 @@ import { h, clear, section, field, bindInput, select, confirmBox, toast, empty, 
 import { go, rerender } from "../nav.js";
 import { renderFlow } from "./flow.js";
 
+const MODES = [["flow", "Google Flow 생성"], ["stock", "스톡 영상·사진"], ["upload", "직접 촬영·보유 파일"],
+  ["image", "이미지·일러스트"], ["text", "텍스트·단색 화면(소스 불필요)"]];
+const MODE_LABEL = Object.fromEntries(MODES);
+
+// 서버(app/flow.py scene_mode)와 같은 규칙: 장면 지정 > 프로젝트 기본값 > (예전 프로젝트) Flow
+export function sceneMode(p, sc) {
+  if (sc.source_mode && sc.source_mode !== "mixed") return sc.source_mode;
+  const prod = p.production?.source_mode;
+  if (prod && prod !== "mixed") return prod;
+  if (prod === "mixed") return "unset";
+  return "flow";
+}
+
 export async function renderSources(page) {
   const p = state.project;
-  page.append(h("div", { class: "page-head" }, h("h1", {}, "5. 영상 (Google Flow)"),
-    h("div", { class: "muted" }, "기획·대본과 최종 음성 시간에 맞춰 Flow(Gemini Omni Flash 1.1)용 4·6·8·10초 클립을 계획하고 프롬프트를 만듭니다. Flow 사이트에서 직접 생성한 MP4를 클립마다 넣으세요.")));
-  if (!(p.script?.scenes || []).length) { page.append(section(null, empty("대본이 없습니다."))); return; }
+  const scenes = p.script?.scenes || [];
+  page.append(h("div", { class: "page-head" }, h("h1", {}, "5. 영상소스"),
+    h("div", { class: "muted" }, "장면마다 영상 제작 방식을 정합니다. Flow 장면은 클립 계획과 프롬프트를 만들고, 스톡·직접 파일·이미지 장면은 파일을 넣습니다. 'AI 추천 화면'과 실제로 확보한 파일은 따로 표시합니다.")));
+  if (!scenes.length) { page.append(section(null, empty("대본이 없습니다."))); return; }
   const subStale = state.status?.steps?.subtitles?.state === "stale";
-  if (subStale) page.append(h("div", { class: "banner stale" }, "자막이 최신이 아니어서 클립 배치 시간이 정확하지 않을 수 있습니다. 자막을 다시 맞추세요."));
-  await renderFlow(page);
-  const other = h("details", { class: "card other-sources" }, h("summary", {}, "기타 소스(선택): 내 영상·이미지 파일 넣기 / 스톡 검색"));
-  page.append(other);
-  let loaded = false;
-  other.addEventListener("toggle", async () => { if (other.open && !loaded) { loaded = true; await renderStock(other); } });
+  if (subStale) page.append(h("div", { class: "banner stale" }, "자막이 최신이 아니어서 장면·클립 시간이 정확하지 않을 수 있습니다. 자막을 다시 맞추세요."));
+
+  // 제작 방식(프로젝트 기본 + 장면별)
+  const prodMode = p.production?.source_mode || (p.flow?.clips?.length ? "flow" : "mixed");
+  const times = sceneTimes(p);
+  page.append(section("제작 방식",
+    h("div", { class: "row" }, "프로젝트 기본",
+      select([["mixed", "장면마다 따로 정함"], ...MODES], prodMode, (v) => { p.production = { ...(p.production || {}), source_mode: v }; changed(true); rerender(); })),
+    h("table", { class: "tbl" }, h("tr", {}, h("th", {}, "장면"), h("th", {}, "역할"), h("th", {}, "시간"), h("th", {}, "제작 방식")),
+      scenes.map((sc, i) => {
+        const t = times[sc.id];
+        const cur = sc.source_mode || "";
+        return h("tr", {}, h("td", {}, i + 1), h("td", {}, sc.purpose || ""),
+          h("td", { class: "nowrap" }, t?.start != null ? `${fmtSec(t.start)}~${fmtSec(t.end)}` : "-"),
+          h("td", {}, select([["", `기본값 따름(${MODE_LABEL[sceneMode({ ...p, script: null }, {})] || "미정"})`], ...MODES], cur, (v) => {
+            if (v) sc.source_mode = v; else delete sc.source_mode;
+            changed(true); rerender();
+          })));
+      })),
+    h("div", { class: "muted small" }, "방식을 바꿔도 이전 Flow 프롬프트와 넣은 파일은 지우지 않고 보관합니다. 다시 Flow로 돌아오면 [클립 계획 다시 계산] 때 되살립니다.")));
+
+  const flowScenes = scenes.filter((sc) => sceneMode(p, sc) === "flow");
+  if (flowScenes.length) await renderFlow(page);
+  const otherScenes = scenes.filter((sc) => !["flow", "text"].includes(sceneMode(p, sc)));
+  if (otherScenes.length) await renderStock(page, otherScenes);
+  const textScenes = scenes.filter((sc) => sceneMode(p, sc) === "text");
+  if (textScenes.length) page.append(section("텍스트·단색 화면 장면", h("div", { class: "muted small" },
+    `장면 ${textScenes.map((sc) => scenes.indexOf(sc) + 1).join(", ")} — 영상 소스 없이 CapCut에서 배경과 글자로 만듭니다.`)));
   page.append(h("div", { class: "row end" }, h("button", { class: "primary", onclick: () => go("export") }, "게시·내보내기 단계로 →")));
 }
 
@@ -35,11 +71,13 @@ export function sceneTimes(p) {
   return Object.fromEntries(out.map((o) => [o.id, o]));
 }
 
-async function renderStock(page) {
+async function renderStock(page, onlyScenes) {
   const p = state.project;
-  const scenes = p.script?.scenes || [];
+  const all = p.script?.scenes || [];
+  const scenes = onlyScenes || all;
   p.sources = p.sources || { items: [] };
   if (!scenes.length) return;
+  page.append(h("h2", { class: "subhead" }, "스톡·직접 파일·이미지 장면"));
   let prov = {};
   try { prov = await api.get("/api/sources/status"); } catch { /* 무시 */ }
   page.append(h("div", { class: "note" },
@@ -47,7 +85,7 @@ async function renderStock(page) {
     !prov.pexels && !prov.pixabay ? " — [설정]에서 무료 API 키를 넣으면 검색할 수 있습니다. 키 없이도 내 파일은 넣을 수 있습니다." : "",
     " 대본 단계의 '영상소스 구하기 쉬운 장면으로' 다시 만들기로 장면 자체를 바꿀 수도 있습니다."));
   const times = sceneTimes(p);
-  scenes.forEach((sc, i) => page.append(sceneBox(sc, i, times[sc.id], prov)));
+  scenes.forEach((sc) => page.append(sceneBox(sc, all.indexOf(sc), times[sc.id], prov)));
 }
 
 function sceneBox(sc, i, t, prov) {

@@ -190,8 +190,10 @@ def test_full_flow_original_preserved_export(client, configure_ai):
     p = save(client, p)
     j = wait_job(client, client.post(f"/api/projects/{pid}/subtitles/align", json={}).json())
     r = j["result"]
-    p["subtitles"].update(cues=r["cues"], based_on_audio_version=r["audio_version"],
-                          based_on_display_hash=r["display_hash"], method=r["method"])
+    fr = r["proposal"]["fresh"]
+    assert fr["coverage"]["ok"]
+    p["subtitles"].update(cues=fr["cues"], line_texts=fr["line_texts"], removed=[], based_on_audio_version=r["audio_version"],
+                          based_on_display_hash=r["display_hash"], based_on_tts_hash=r["tts_hash"], method=r["method"])
     p = save(client, p)
     st = client.get(f"/api/projects/{pid}").json()["status"]
     assert st["steps"]["subtitles"]["state"] == "done"
@@ -207,13 +209,15 @@ def test_full_flow_original_preserved_export(client, configure_ai):
     p = save(client, p)
     st = client.get(f"/api/projects/{pid}").json()["status"]
     assert st["steps"]["subtitles"]["state"] == "stale"
-    # 다시 맞추기: 수동 수정이 diff에 보고되고, 유지 버전이 제공된다
+    # 다시 맞추기: 수동 문구를 유지한 결과가 제공되고, 누락·중복 검사를 통과한다
     r2 = wait_job(client, client.post(f"/api/projects/{pid}/subtitles/align", json={}).json())["result"]
-    assert r2["diff"]["manual"] and r2["diff"]["merged_keep_manual_text"][6]["text"] == "手修正テキスト"
+    km = r2["proposal"]["keep_manual"]
+    assert km["coverage"]["ok"] and "手修正テキスト" in [c["text"] for c in km["cues"]]
+    assert km["report"]["time_only"] and km["report"]["kept"] == 1
     assert r2["cues"][-1]["end"] <= proc2["duration"] + 0.001
     assert r2["cues"][-1]["end"] < p["subtitles"]["cues"][-1]["end"] - 0.5  # 새 음성(더 짧음)에 맞춰 이동
-    p["subtitles"].update(cues=r2["diff"]["merged_keep_manual_text"], based_on_audio_version=2,
-                          based_on_display_hash=r2["display_hash"])
+    p["subtitles"].update(cues=km["cues"], line_texts=km["line_texts"], removed=km["removed"], based_on_audio_version=2,
+                          based_on_display_hash=r2["display_hash"], based_on_tts_hash=r2["tts_hash"])
     # 대본 변경 → 음성 stale
     p2 = json.loads(json.dumps(p))
     p2["script"]["scenes"][0]["lines"][0]["tts"] += "ね"
@@ -314,3 +318,16 @@ def test_cost_only_when_price_given(client, configure_ai):
     assert c and abs(c["estimate"] - (u["input_tokens"] * 4 + u["output_tokens"] * 20) / 1e6) < 1e-9 and "추정" in c["note"]
     s["ai"].update(price_input_per_mtok=None, price_output_per_mtok=None)
     client.put("/api/settings", json={"settings": s})
+
+
+@pytest.mark.parametrize("model,needle", [("mock-cut", "연결이 끊겼습니다"), ("mock-stall", "멈춰서 중단")])
+def test_stream_cut_or_stall_reported_fast(client, configure_ai, monkeypatch, model, needle):
+    """중개서버가 스트리밍 도중 끊거나 멈추면 시간 제한까지 기다리지 않고 바로 알린다."""
+    from app import ai_client
+    monkeypatch.setattr(ai_client, "STALL_S", 2)
+    configure_ai(model=model, stream=True, timeout=60)
+    t0 = time.time()
+    j = wait_job(client, client.post("/api/ai/test").json(), timeout=30)
+    assert j["status"] == "error" and needle in j["error"] and "다시 시도" in j["hint"], j
+    assert time.time() - t0 < 10
+    configure_ai()

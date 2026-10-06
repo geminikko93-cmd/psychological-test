@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -150,13 +151,20 @@ def _parse_message(j: Any) -> dict:
             "usage": j.get("usage") or {}, "model": j.get("model"), "id": j.get("id")}
 
 
-async def _stream_request(client: httpx.AsyncClient, url: str, headers: dict, body: dict, job=None) -> dict:
+STALL_S = 60  # 글자가 오기 시작한 뒤 이 시간 동안 아무것도 안 오면 '멈춤'으로 보고 중단
+
+
+async def _stream_request(client: httpx.AsyncClient, url: str, headers: dict, body: dict, job=None,
+                          deadline: float | None = None, state: dict | None = None) -> dict:
+    """SSE 스트리밍 수신. 중개서버가 도중에 끊거나 멈추면 기다리지 않고 바로 알린다."""
+    state = state if state is not None else {}
     text_parts: list[str] = []
     usage: dict = {}
     stop_reason = None
     stop_details = None
     model = None
     msg_id = None
+    got_stop = False
     async with client.stream("POST", url, headers=headers, json=body) as resp:
         if resp.status_code != 200:
             raw = (await resp.aread()).decode("utf-8", "replace")
@@ -168,7 +176,23 @@ async def _stream_request(client: httpx.AsyncClient, url: str, headers: dict, bo
                 return _parse_message(json.loads(raw))
             except ValueError as e:
                 raise UserError("스트리밍 응답을 해석하지 못했습니다.", "설정에서 '스트리밍 사용'을 끄고 다시 시도하세요.", 502) from e
-        async for line in resp.aiter_lines():
+        lines = resp.aiter_lines().__aiter__()
+        while True:
+            if text_parts:
+                wait = STALL_S
+            else:  # 첫 글자 전: 모델이 생각하는 동안은 전체 시간 제한까지 기다린다
+                wait = max(1.0, (deadline - time.time()) if deadline else 300.0)
+            try:
+                line = await asyncio.wait_for(lines.__anext__(), timeout=wait)
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError as e:
+                n = sum(len(x) for x in text_parts)
+                if text_parts:
+                    raise UserError(f"응답을 받는 도중 {STALL_S}초 동안 멈춰서 중단했습니다(받은 글자 {n}자).",
+                                    "중개서버가 긴 응답을 중간에 멈춘 것으로 보입니다. [다시 시도]하거나, 설정에서 더 빠른 모델(예: claude-sonnet-5)을 써 보세요.", 504) from e
+                raise UserError("정해진 시간 안에 첫 응답이 오지 않아 중단했습니다.",
+                                "잠시 뒤 다시 시도하거나, 설정에서 시간 제한을 늘리거나 더 빠른 모델을 쓰세요.", 504) from e
             if not line.startswith("data:"):
                 continue
             data = line[5:].strip()
@@ -187,6 +211,7 @@ async def _stream_request(client: httpx.AsyncClient, url: str, headers: dict, bo
                 d = ev.get("delta") or {}
                 if d.get("type") == "text_delta":
                     text_parts.append(d.get("text", ""))
+                    state["receiving"] = True
                     if job is not None:
                         job.report(message=f"응답 받는 중… {sum(len(x) for x in text_parts)}자")
             elif t == "message_delta":
@@ -194,12 +219,28 @@ async def _stream_request(client: httpx.AsyncClient, url: str, headers: dict, bo
                 stop_reason = d.get("stop_reason", stop_reason)
                 stop_details = d.get("stop_details", stop_details)
                 usage.update(ev.get("usage") or {})
+            elif t == "message_stop":
+                got_stop = True
             elif t == "error":
                 err = ev.get("error") or {}
                 raise _error_from_response(529 if err.get("type") == "overloaded_error" else 500,
                                            json.dumps(ev), httpx.Headers())
+    if not got_stop and not stop_reason:
+        n = sum(len(x) for x in text_parts)
+        raise UserError(f"응답을 받는 도중 중개서버 연결이 끊겼습니다(받은 글자 {n}자, 응답 미완성).",
+                        "중개서버가 긴 응답을 중간에 끊은 것으로 보입니다. [다시 시도]하거나, 설정에서 더 빠른 모델(예: claude-sonnet-5)을 써 보세요.", 502)
     return {"text": "".join(text_parts), "stop_reason": stop_reason, "stop_details": stop_details,
             "usage": usage, "model": model, "id": msg_id}
+
+
+async def _wait_ticker(job, state: dict, t0: float) -> None:
+    """첫 글자가 오기 전, 기다린 시간을 화면에 보여준다(멈춘 것이 아님을 알 수 있게)."""
+    while True:
+        await asyncio.sleep(1)
+        if state.get("receiving") or job is None:
+            return
+        sec = int(time.time() - t0)
+        job.report(message=f"응답을 기다리는 중… {sec}초 — 모델이 먼저 생각한 뒤 답을 쓰기 때문에 첫 글자까지 1~2분 걸릴 수 있습니다.")
 
 
 async def call(system: str, user: str, max_tokens: int | None = None, job=None) -> dict:
@@ -209,12 +250,14 @@ async def call(system: str, user: str, max_tokens: int | None = None, job=None) 
     stream = bool(s.get("stream"))
     url, headers, body, timeout = _build(system, [{"role": "user", "content": user}], max_tokens, stream)
     t0 = time.time()
+    state: dict = {}
+    ticker = asyncio.create_task(_wait_ticker(job, state, t0)) if job is not None else None
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15.0)) as client:
             if job is not None:
                 job.report(message="AI 서버에 요청을 보냈습니다. 응답을 기다리는 중…")
             if stream:
-                res = await _stream_request(client, url, headers, body, job)
+                res = await _stream_request(client, url, headers, body, job, deadline=t0 + timeout, state=state)
             else:
                 resp = await client.post(url, headers=headers, json=body)
                 if resp.status_code != 200:
@@ -230,9 +273,15 @@ async def call(system: str, user: str, max_tokens: int | None = None, job=None) 
                         "설정에서 시간 제한을 늘리거나, 스트리밍을 켜거나, 잠시 뒤 다시 시도하세요.", 504) from e
     except httpx.ConnectError as e:
         raise UserError("AI 서버에 연결하지 못했습니다.", "서버 기본 주소, 인터넷 연결, 중개서버 실행 상태를 확인하세요.", 502) from e
+    except httpx.RemoteProtocolError as e:
+        raise UserError("응답을 받는 도중 중개서버 연결이 끊겼습니다.",
+                        "중개서버가 긴 응답을 중간에 끊은 것으로 보입니다. [다시 시도]하거나 더 빠른 모델을 써 보세요.", 502) from e
     except httpx.HTTPError as e:
         raise UserError("AI 서버와 통신 중 오류가 발생했습니다: " + _redact(type(e).__name__),
                         "인터넷 연결과 서버 주소를 확인하세요.", 502) from e
+    finally:
+        if ticker:
+            ticker.cancel()
     res["latency_s"] = round(time.time() - t0, 2)
     if res.get("stop_reason") == "refusal":
         raise UserError("AI가 이 요청을 거절했습니다.", "주제나 표현을 바꿔 다시 시도하세요.", 422)

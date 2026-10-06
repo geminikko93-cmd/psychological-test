@@ -292,7 +292,7 @@ def apply_plan(data: np.ndarray, sr: int, regions: list[dict]) -> tuple[np.ndarr
 
 def verify_cut(data: np.ndarray, sr: int, regions: list[dict], thr: float,
                processed: np.ndarray, segments: list[list[float]]) -> dict:
-    """발음 잘림 검증:
+    """음량 기준 점검(발음이 절대 잘리지 않았다는 보장은 아님):
     1) 잘라낸 구간 안의 최대 레벨이 무음 기준보다 낮은가
     2) 잘라낸 경계와 가장 가까운 소리 사이에 보호 여유가 있었는가
     3) 남긴 소리 구간의 샘플이 원본과 같은가(페이드 구간 제외)
@@ -335,8 +335,10 @@ def verify_cut(data: np.ndarray, sr: int, regions: list[dict], thr: float,
     return {"ok": bool(ok), "removed_max_db": round(worst_db, 1), "threshold_db": thr,
             "min_distance_to_speech_ms": None if min_dist is None else int(round(min_dist * 1000)),
             "speech_samples_identical": identical,
-            "summary": ("잘라낸 구간에 소리가 없고, 남긴 구간은 원본과 동일합니다." if ok else
-                        "잘라낸 구간에 기준보다 큰 소리가 있었거나 남긴 구간이 원본과 다릅니다. 구간을 확인하세요.")}
+            "summary": (f"잘라낸 구간은 모두 무음 기준({thr} dB)보다 조용했고, 남긴 구간 샘플은 원본과 같습니다. "
+                        "아주 약한 소리(속삭임·숨·약한 어미)는 기준만으로 판단하지 못할 수 있으니 '확인 권장' 구간은 직접 들어 보세요."
+                        if ok else
+                        "잘라낸 구간에 무음 기준보다 큰 소리가 있었거나, 남긴 구간이 원본과 다릅니다. 해당 구간을 들어 확인하세요.")}
 
 
 def map_time(segments: list[list[float]], t: float) -> float:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 
-from . import ai_client, channel, prompts, storage
+from . import ai_client, channel, plan_check, prompts, storage
 from .jp_text import reading_hint
 from .util import UserError, new_id, now_iso
 
@@ -105,6 +105,10 @@ def norm_candidate(c: dict, i: int) -> dict:
         "source_difficulty_ko": _s(c.get("source_difficulty_ko")), "claims_ko": _s(c.get("claims_ko")),
         "risks_ko": _s(c.get("risks_ko")), "overlap_check_ko": _s(c.get("overlap_check_ko")),
         "estimated_seconds": c.get("estimated_seconds"),
+        "core_idea_ko": _s(c.get("core_idea_ko"), 300), "content_type": _s(c.get("content_type"), 60),
+        "viewer_action": _s(c.get("viewer_action"), 60), "ending_type": _s(c.get("ending_type"), 60),
+        "ending_ko": _s(c.get("ending_ko")), "production_load_ko": _s(c.get("production_load_ko")),
+        "differs_from_ko": _s(c.get("differs_from_ko")),
     }
 
 
@@ -136,24 +140,69 @@ def norm_scene(d: dict, keep_id: str | None = None) -> dict:
 
 # ---------------------------------------------------------------- 작업
 
+def production_of(project: dict) -> dict:
+    """프로젝트의 영상 제작 방식(기획·대본·소스 프롬프트에 반영)."""
+    prod = project.get("production") or {}
+    modes = {sc.get("id"): sc.get("source_mode") for sc in (project.get("script") or {}).get("scenes", []) if sc.get("source_mode")}
+    out = {"source_mode": prod.get("source_mode") or "mixed", "label_ko": SOURCE_MODE_LABELS.get(prod.get("source_mode") or "mixed")}
+    if modes:
+        out["scene_overrides"] = {k: SOURCE_MODE_LABELS.get(v, v) for k, v in modes.items()}
+    return out
+
+
+SOURCE_MODE_LABELS = {"flow": "Google Flow로 AI 영상 생성", "stock": "스톡 영상·사진", "upload": "직접 촬영·보유 파일",
+                      "image": "이미지·일러스트(정지 화면 + 움직임 효과)", "text": "텍스트·단색 화면", "mixed": "장면마다 다르게(혼합)"}
+
+
 async def run_plan(project: dict, feedback: str, job) -> dict:
     hist = history_for(project.get("id"))
     prev = (project.get("plan_candidates") or {}).get("items") or []
-    user = prompts.plan_prompt(project.get("idea") or {}, hist, feedback, prev if feedback or prev else None)
+    user = prompts.plan_prompt(project.get("idea") or {}, hist, feedback, prev if feedback or prev else None,
+                               production_of(project))
     res = await _call(user, job)
     obj = extract_json(res["text"])
     cands = [norm_candidate(c, i) for i, c in enumerate(obj.get("candidates") or []) if isinstance(c, dict)]
     if not cands:
         raise UserError("AI가 기획 후보를 돌려주지 않았습니다.", "다시 시도하세요.", 422)
+    ids = set()
+    for i, c in enumerate(cands):  # id 중복 방지
+        if c["id"] in ids:
+            c["id"] = "ABCDEFG"[i % 7]
+        ids.add(c["id"])
     return {"items": cands, "comparison_ko": _s(obj.get("comparison_ko")), "generated_at": now_iso(),
-            "feedback": feedback, "history_used": len(hist), "log": _usage_entry("기획 제안", res)}
+            "feedback": feedback, "history_used": len(hist), "similarity": plan_check.compare_candidates(cands),
+            "log": _usage_entry("기획 제안", res)}
+
+
+async def run_plan_one(project: dict, target_id: str, instruction: str, job) -> dict:
+    """비슷하다고 표시된 후보 1개만 다시 만든다(AI 호출 1회)."""
+    pc = project.get("plan_candidates") or {}
+    cands = pc.get("items") or []
+    target = next((c for c in cands if c.get("id") == target_id), None)
+    if not target:
+        raise UserError("다시 만들 후보를 찾지 못했습니다.")
+    others = [{k: c.get(k) for k in ("id", "core_idea_ko", "content_type", "viewer_action", "ending_type", "first_line_ja",
+                                     "structure_ko", "payoff_ko")} for c in cands if c.get("id") != target_id]
+    reason = "; ".join((pc.get("similarity") or {}).get("flagged", {}).get(target_id, [])) or "제작자가 이 후보만 다시 만들기를 요청함"
+    user = prompts.plan_one_prompt(project.get("idea") or {}, history_for(project.get("id"), limit=6), others, target_id,
+                                   reason, instruction, production_of(project))
+    res = await _call(user, job)
+    obj = extract_json(res["text"])
+    c = obj.get("candidate") if isinstance(obj.get("candidate"), dict) else None
+    if not c:
+        raise UserError("AI가 새 후보를 돌려주지 않았습니다.", "다시 시도하세요.", 422)
+    new = norm_candidate(c, 0)
+    new["id"] = target_id
+    new["regenerated_at"] = now_iso()
+    merged = [new if x.get("id") == target_id else x for x in cands]
+    return {"candidate": new, "similarity": plan_check.compare_candidates(merged), "log": _usage_entry("기획 후보 1개 다시", res)}
 
 
 async def run_script(project: dict, notes: str, job) -> dict:
     if not project.get("plan"):
         raise UserError("먼저 기획 방향을 선택하세요.")
     hist = history_for(project.get("id"))
-    user = prompts.script_prompt(project.get("idea") or {}, plan_input(project), hist, notes)
+    user = prompts.script_prompt(project.get("idea") or {}, plan_input(project), hist, notes, production_of(project))
     res = await _call(user, job)
     obj = extract_json(res["text"])
     scenes = [norm_scene(s) for s in (obj.get("scenes") or []) if isinstance(s, dict)]
@@ -166,7 +215,7 @@ async def run_script(project: dict, notes: str, job) -> dict:
             "content_kind": obj.get("content_kind"),
             "claims_level_ko": _s(obj.get("claims_level_ko")),
             "self_check_ko": [_s(x) for x in (obj.get("self_check_ko") or [])][:12],
-            "generated_at": now_iso(), "log": _usage_entry("대본 생성", res)}
+            "generated_at": now_iso(), "plan_hash": storage.plan_hash(project), "log": _usage_entry("대본 생성", res)}
 
 
 async def run_partial(project: dict, scope: dict, preset: str, instruction: str, job) -> dict:

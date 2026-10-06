@@ -67,6 +67,21 @@ def pick(prompt: str, body: dict) -> dict | str:
                 "clips": [{"clip_id": i, "prompt_en": f"[MOCK] clip {i}: a door slowly opens, no on-screen text, no dialogue",
                            "prompt_ko": "[모의] 문이 천천히 열림", "beats_ko": "0~2초: [모의]", "mode": "text",
                            "mode_note_ko": "[모의]", "risk_ko": ""} for i in ids]}
+    if "1案だけを作り直して" in prompt:
+        return {"candidate": {"id": "C", "core_idea_ko": "[모의] 짧은 이야기형", "content_type": "短い物語・場面",
+                              "viewer_action": "想像する", "ending_type": "どんでん返し", "approach_name_ko": "[모의] 미니 스토리",
+                              "first_line_ja": "【モック】ある朝、ドアの前に箱がありました。", "structure_ko": ["장면 1: 상자 발견", "장면 2: 반전"],
+                              "payoff_ko": "[모의] 반전", "ending_ko": "[모의] 질문을 남김", "differs_from_ko": "[모의] 선택지 없음"}}
+    if "企画方向を3案" in prompt and body.get("model") == "mock-similar":
+        base = {"content_type": "選択型の問いかけ", "viewer_action": "選ぶ", "ending_type": "結果公開",
+                "structure_ko": ["장면 1: 질문", "장면 2: 선택지 3개", "장면 3: 결과"], "payoff_ko": "고른 동물에 따라 결과"}
+        return {"candidates": [
+            dict(base, id="A", approach_name_ko="[모의] 동물 선택", first_line_ja="最初に目に入った動物はどれですか？"),
+            dict(base, id="B", approach_name_ko="[모의] 관찰 공감", content_type="観察・あるある共感", viewer_action="共感する",
+                 ending_type="オチ・笑い", structure_ko=["장면 1: 흔한 상황", "장면 2: 공감 포인트", "장면 3: 웃음"],
+                 first_line_ja="エレベーターで気まずい時、どこを見ますか。", payoff_ko="공감되는 웃음"),
+            dict(base, id="C", approach_name_ko="[모의] 동물 선택2", first_line_ja="最初に目に入った動物はどれですか？（犬・猫・鳥）")],
+            "comparison_ko": "[모의]"}
     if "企画方向を3案" in prompt:
         return PLAN
     if "台本を作って" in prompt:
@@ -101,6 +116,16 @@ async def messages(request: Request):
     text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
     stop = "max_tokens" if model == "mock-truncated" else "end_turn"
     usage = {"input_tokens": max(1, len(prompt) // 3), "output_tokens": max(1, len(text) // 3)}
+    if body.get("stream") and model in ("mock-cut", "mock-stall"):
+        async def broken():
+            start = {"type": "message_start", "message": {"id": "m", "model": model, "usage": {}}}
+            delta = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": '{"candidates": ['}}
+            yield "event: message_start\ndata: " + json.dumps(start) + "\n\n"
+            yield "event: content_block_delta\ndata: " + json.dumps(delta) + "\n\n"
+            if model == "mock-stall":
+                await asyncio.sleep(15)
+            # mock-cut: message_stop 없이 연결 종료
+        return StreamingResponse(broken(), media_type="text/event-stream")
     if body.get("stream"):
         async def gen():
             yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': 'msg_mock', 'model': model, 'usage': {'input_tokens': usage['input_tokens'], 'output_tokens': 1}}})}\n\n"

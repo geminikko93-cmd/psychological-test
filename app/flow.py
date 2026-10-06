@@ -12,7 +12,28 @@ from __future__ import annotations
 from .jp_text import mora_count
 from .util import new_id, stable_hash
 
+# Flow 모델 정보는 여기 한 곳에서만 정의한다(화면·프롬프트·내보내기가 모두 이 값을 쓴다).
+MODEL_LABEL = "Gemini Omni Flash 1.1"
+PRODUCT_LABEL = f"Google Flow ({MODEL_LABEL})"
 ALLOWED = (4, 6, 8, 10)
+ASPECT = "9:16"
+SOURCE_MODES = ("flow", "stock", "upload", "image", "text", "mixed")
+
+
+def config_info() -> dict:
+    return {"model_label": MODEL_LABEL, "product_label": PRODUCT_LABEL, "durations": list(ALLOWED), "aspect": ASPECT}
+
+
+def scene_mode(project: dict, scene: dict) -> str:
+    """장면의 영상 제작 방식. 장면 지정 > 프로젝트 기본값. 예전 프로젝트(설정 없음)는 Flow."""
+    if scene.get("source_mode") in SOURCE_MODES and scene.get("source_mode") != "mixed":
+        return scene["source_mode"]
+    prod = (project.get("production") or {}).get("source_mode")
+    if prod in SOURCE_MODES and prod != "mixed":
+        return prod
+    if prod == "mixed":
+        return "unset"
+    return "flow"
 MORA_PER_SEC = 7.0  # 음성 없을 때 추정용(TTS 일반 속도). 실제 음성이 들어오면 실제 시간 사용
 CLIP_PENALTY = 1.6  # 클립 1개 추가 비용(초 단위 낭비와 비교) — 너무 잘게 쪼개지 않게
 
@@ -93,8 +114,8 @@ def plan_clips(project: dict, existing: list[dict] | None = None) -> dict:
     clips = []
     for si, sc in enumerate(scenes):
         rng = scene_ranges[si]
-        if not rng:
-            continue
+        if not rng or scene_mode(project, sc) != "flow":
+            continue  # Flow를 쓰지 않는 장면에는 클립을 만들지 않는다
         s0 = rng[0] if si > 0 else 0.0
         nxt = next((r[0] for r in scene_ranges[si + 1:] if r), None)
         e0 = nxt if nxt is not None else (dur_total or rng[1] + 0.3)

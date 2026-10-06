@@ -83,7 +83,8 @@ export async function renderExport(page) {
         }
         try {
           const r = await runJob(api.post(`/api/projects/${p.id}/export`, { zip: opt.zip, allow_stale: allowStale }));
-          p.last_export = { at: r.exported_at, folder: r.folder, zip: r.zip };
+          p.last_export = { at: r.exported_at, folder: r.folder, zip: r.zip, version: r.version, basis: r.basis, project_rev: r.project_rev };
+          p.export_history = [...(p.export_history || []), p.last_export].slice(-30);
           changed(true);
           showResult(resBox, r);
           toast("내보내기를 마쳤습니다.", "ok", r.folder);

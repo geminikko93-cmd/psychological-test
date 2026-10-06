@@ -37,9 +37,13 @@ export async function renderScript(page) {
   }
 
   // 기획 변경 감지
-  if (s.scenes?.length && p.plan?.updated_at && s.based_on_plan_at && p.plan.updated_at > s.based_on_plan_at) {
-    page.append(h("div", { class: "banner stale" }, "대본을 만든 뒤 기획이 수정되었습니다. 필요한 부분만 다시 생성하거나, 현재 대본을 유지하세요.",
-      h("button", { class: "small", onclick: () => { s.based_on_plan_at = p.plan.updated_at; changed(true); rerender(); } }, "현재 대본 유지(확인)")));
+  if (s.scenes?.length && state.status?.steps?.script?.state === "stale") {
+    page.append(h("div", { class: "banner stale" }, "대본을 만든 뒤 기획 내용이 바뀌었습니다. 필요한 부분만 다시 생성하거나, 지금 대본을 유지하세요.",
+      h("button", { class: "small", onclick: async () => {
+        if (!(await flush())) return;
+        s.based_on_plan_hash = state.status.plan_hash; s.plan_ack_at = new Date().toISOString();
+        changed(true); await flush(); rerender();
+      } }, "현재 대본 유지(확인)")));
   }
 
   const notes = { text: "" };
@@ -48,11 +52,11 @@ export async function renderScript(page) {
     h("div", { class: "row" },
       h("button", { class: "primary", disabled: !p.plan, onclick: async () => {
         if (s.scenes?.length && !(await confirmBox("대본 새로 만들기", "현재 대본 전체를 새 대본으로 바꿉니다.\n현재 대본은 '대본 기록'에 보관되어 되돌릴 수 있습니다.", "새로 만들기"))) return;
-        const r = await runAi("script", { notes: notes.text });
+        const r = await runAi("script", { notes: notes.text }, { guard: () => JSON.stringify(s.scenes || []), what: "대본" });
         if (!r) return;
         snapshot("AI 새 대본 생성 전");
         Object.assign(s, { scenes: r.scenes, title_candidates: r.title_candidates, claims_level_ko: r.claims_level_ko,
-          self_check_ko: r.self_check_ko, generated_at: r.generated_at, based_on_plan_at: p.plan?.updated_at });
+          self_check_ko: r.self_check_ko, generated_at: r.generated_at, based_on_plan_hash: r.plan_hash });
         if (r.content_kind && ["entertainment", "factual"].includes(r.content_kind) && p.idea.content_kind === "undecided") p.idea.content_kind = r.content_kind;
         changed(true); rerender();
       } }, s.scenes?.length ? "대본 전체 새로 만들기" : "AI 대본 생성"),
@@ -180,7 +184,7 @@ function partialPanel() {
       else if (opt.preset === "payoff") scope = { scene_ids: sc.slice(-Math.min(2, sc.length)).map((x) => x.id) };
       else scope = { all: true };
       if (!opt.preset && !opt.text.trim()) { toast("무엇을 고칠지 선택하거나 지시를 적어 주세요.", "info"); return; }
-      const r = await runAi("partial", { scope, preset: opt.preset, instruction: opt.text });
+      const r = await runAi("partial", { scope, preset: opt.preset, instruction: opt.text }, { guard: () => JSON.stringify(p.script.scenes), what: "대본" });
       if (r) await previewChanges(r);
     } }, "다시 만들기 (미리보기)"));
 }

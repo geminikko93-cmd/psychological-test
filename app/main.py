@@ -11,7 +11,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ai_client, ai_tasks, align, channel, config, export, flow, jobs, sources, storage
+from . import ai_client, ai_tasks, align, channel, config, export, flow, jobs, sources, storage, subs_merge
 from . import audio as A
 from .jp_text import lint_project, mora_count, overlap_report, reading_hint, wrap_lines
 from .srt import build_srt, check_cues
@@ -245,13 +245,15 @@ async def ai_task(pid: str, task: str, body: dict):
     ai_client.check_ready()
     p = storage.load_project(pid)
     labels = {"plan": "기획 방향 제안", "script": "대본 생성", "partial": "부분 재생성", "review": "대본 검토",
-              "publish": "게시 정보 생성", "flow": "Flow 영상 프롬프트"}
+              "publish": "게시 정보 생성", "flow": "Flow 영상 프롬프트", "plan_one": "기획 후보 1개 다시 만들기"}
     if task not in labels:
         raise UserError("알 수 없는 AI 작업입니다.", status=404)
 
     async def run(job):
         if task == "plan":
             return await ai_tasks.run_plan(p, str(body.get("feedback") or ""), job)
+        if task == "plan_one":
+            return await ai_tasks.run_plan_one(p, str(body.get("candidate_id") or ""), str(body.get("instruction") or ""), job)
         if task == "script":
             return await ai_tasks.run_script(p, str(body.get("notes") or ""), job)
         if task == "partial":
@@ -428,7 +430,7 @@ async def audio_apply(pid: str, body: dict):
         job.report(0.6, "무음 정리 적용 중…")
         out, segments = A.apply_plan(data, sr, res["regions"])
         job.check()
-        job.report(0.8, "발음 잘림 검증 중…")
+        job.report(0.8, "잘라낸 구간 음량·남긴 구간 점검 중…")
         ver = A.verify_cut(data, sr, res["regions"], res["threshold_db"], out, segments)
         prev = [x for x in (storage.project_dir(pid) / "media" / "audio").glob("final_v*.wav")]
         version = max([int(x.stem.split("_v")[-1]) for x in prev if x.stem.split("_v")[-1].isdigit()] + [0]) + 1
@@ -463,43 +465,23 @@ def audio_peaks(pid: str, which: str = "original"):
 
 # ---------------------------------------------------------------- 자막
 
-def cue_key(c: dict) -> str:
-    return f"{c.get('line_id')}#{c.get('part', 0)}"
-
-
-def diff_cues(old: list[dict], new: list[dict]) -> dict:
-    old_by = {cue_key(c): c for c in old}
-    changes, manual = [], []
-    for c in new:
-        o = old_by.get(cue_key(c))
-        if not o:
-            changes.append({"key": cue_key(c), "type": "added", "new_text": c["text"], "new_start": c["start"], "new_end": c["end"]})
-            continue
-        if o.get("manual_text") or o.get("manual_time"):
-            manual.append({"key": cue_key(c), "old_text": o.get("text"), "new_text": c["text"],
-                           "old_start": o.get("start"), "old_end": o.get("end"),
-                           "new_start": c["start"], "new_end": c["end"],
-                           "manual_text": bool(o.get("manual_text")), "manual_time": bool(o.get("manual_time"))})
-        if o.get("text") != c["text"] or abs(o.get("start", 0) - c["start"]) > 0.02 or abs(o.get("end", 0) - c["end"]) > 0.02:
-            changes.append({"key": cue_key(c), "type": "changed", "old_text": o.get("text"), "new_text": c["text"],
-                            "old_start": o.get("start"), "new_start": c["start"], "old_end": o.get("end"), "new_end": c["end"]})
-    new_keys = {cue_key(c) for c in new}
-    for k, o in old_by.items():
-        if k not in new_keys:
-            changes.append({"key": k, "type": "removed", "old_text": o.get("text")})
-    merged = []
-    for c in new:
-        o = old_by.get(cue_key(c))
-        if o and o.get("manual_text"):
-            merged.append(dict(c, text=o["text"], manual_text=True))
-        else:
-            merged.append(c)
-    return {"changes": changes, "manual": manual, "merged_keep_manual_text": merged}
+def _merge_proposal(p: dict, auto_cues: list, line_times: list, duration: float, choices: dict | None = None,
+                    restore_removed: bool = False) -> dict:
+    subs = p.get("subtitles") or {}
+    sub_settings = config.load_settings()["subtitle"]
+    old = subs.get("cues") or []
+    out = {"fresh": subs_merge.fresh(auto_cues, p)}
+    if any(subs_merge.is_user_shaped(c) for c in old) or subs.get("removed"):
+        m = subs_merge.merge(old, subs.get("line_texts"), subs.get("removed"), auto_cues, line_times, p, duration,
+                             sub_settings, choices, restore_removed)
+        m["issues"] = check_cues(m["cues"], duration, sub_settings)
+        out["keep_manual"] = m
+    return out
 
 
 @app.post("/api/projects/{pid}/subtitles/align")
 async def subtitles_align(pid: str, body: dict):
-    p = storage.load_project(pid)
+    p = storage.load_project(pid)  # 시작 시점의 프로젝트(대본·자막)를 기준으로 계산
     proc = (p.get("audio") or {}).get("processed")
     if not proc:
         raise UserError("최종 음성이 없습니다.", "음성 단계에서 무음 정리를 적용하거나 '원본 그대로 사용'을 누르세요.")
@@ -510,13 +492,25 @@ async def subtitles_align(pid: str, body: dict):
         job.check()
         res = align.align_project(p, data, sr, float(proc.get("threshold_db") or -55),
                                   wav_path=storage.media_path(pid, proc["file"]), use_asr=use_asr, job=job)
-        res["diff"] = diff_cues((p.get("subtitles") or {}).get("cues") or [], res["cues"])
         res["audio_version"] = proc.get("version")
         res["display_hash"] = storage.display_hash(p)
+        res["tts_hash"] = storage.tts_hash(p)
         res["issues"] = check_cues(res["cues"], proc.get("duration"), config.load_settings()["subtitle"])
+        res["proposal"] = _merge_proposal(p, res["cues"], res["line_times"], res["duration"])
         return res
 
     return jobs.start_thread_job("align", "자막 시간 맞추기", run).public()
+
+
+@app.post("/api/projects/{pid}/subtitles/merge")
+async def subtitles_merge(pid: str, body: dict):
+    """재정렬 결과에 수동 수정을 반영(선택 변경 시 다시 계산). 저장은 화면에서 확인 후 한다."""
+    p = storage.load_project(pid)
+    auto, lts = body.get("auto_cues"), body.get("line_times")
+    if not isinstance(auto, list) or not isinstance(lts, list):
+        raise UserError("재정렬 결과가 없습니다.")
+    return _merge_proposal(p, auto, lts, float(body.get("duration") or 0), body.get("choices") or {},
+                           bool(body.get("restore_removed")))
 
 
 @app.post("/api/projects/{pid}/subtitles/check")
@@ -585,12 +579,19 @@ async def sources_download(pid: str, body: dict):
 
 # ---------------------------------------------------------------- Google Flow 클립
 
+@app.get("/api/flow/config")
+async def flow_config():
+    return flow.config_info()
+
+
 @app.post("/api/projects/{pid}/flow/plan")
 async def flow_plan(pid: str):
     p = storage.load_project(pid)
     if not storage.all_lines(p):
         raise UserError("대본이 있어야 클립을 계획할 수 있습니다.")
-    return flow.plan_clips(p, (p.get("flow") or {}).get("clips") or [])
+    fl = p.get("flow") or {}
+    # 예전에 다른 방식으로 바꿨던 장면의 클립도 함께 넘겨, 다시 Flow로 돌아오면 프롬프트·파일 연결을 되살린다
+    return flow.plan_clips(p, (fl.get("clips") or []) + (fl.get("previous_clips") or []))
 
 
 @app.post("/api/projects/{pid}/flow/lastframe")
@@ -622,7 +623,7 @@ async def export_precheck(pid: str):
 async def do_export(pid: str, body: dict):
     def run(job):
         job.report(0.1, "파일을 확인하고 묶는 중…")
-        return export.build_package(pid, bool(body.get("zip", True)), bool(body.get("allow_stale")))
+        return export.build_package(pid, bool(body.get("zip", True)), bool(body.get("allow_stale")), job=job)
 
     return jobs.start_thread_job("export", "내보내기", run).public()
 

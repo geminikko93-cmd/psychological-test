@@ -254,20 +254,37 @@ def _island_bounds(islands, t0: float, t1: float, limit: float = 0.5) -> tuple[f
 
 def build_cues(lines: list[dict], line_times: list[dict], duration: float, sub_settings: dict,
                method_label: str) -> list[dict]:
+    from .subs_merge import finalize, flat
+
     max_chars = int(sub_settings.get("max_line_chars", 14))
     max_lines = int(sub_settings.get("max_lines", 2))
     fill_under = float(sub_settings.get("fill_gaps_under_s", 0.6))
     raw = []
     for ln, lt in zip(lines, line_times):
+        line = flat(ln.get("display", ""))
         parts = split_for_cues(ln.get("display", ""), max_chars, max_lines)
         if not parts:
             continue
+        # 각 자막 조각이 원문 몇 번째 글자부터인지(src). 조각을 이어 붙인 것이 원문과 다르면 비율로 추정
+        lens = [len(flat(p)) for p in parts]
+        exact = "".join(flat(p) for p in parts) == line
+        offs, acc = [], 0
+        for i, L in enumerate(lens):
+            if exact:
+                offs.append((acc, acc + L))
+            else:
+                tot = max(1, sum(lens))
+                a = round(len(line) * acc / tot)
+                b = len(line) if i == len(lens) - 1 else round(len(line) * (acc + L) / tot)
+                offs.append((a, b))
+            acc += L
+        src = [[{"line_id": ln["id"], "a": a, "b": b}] for a, b in offs]
         start, end = lt["start"], lt["end"]
         if len(parts) == 1:
             raw.append({"line_id": ln["id"], "part": 0, "text": parts[0], "s": start, "e": end,
-                        "conf": lt["conf"], "note": lt.get("note", "")})
+                        "conf": lt["conf"], "note": lt.get("note", ""), "src": src[0]})
             continue
-        w = [mora_count(p.replace("\n", "")) for p in parts]
+        w = [mora_count(flat(p)) for p in parts]
         tot = sum(w)
         inner_edges = [(g[0] + g[1]) / 2 for g in lt.get("inner_gaps", [])]
         cuts, acc = [], 0.0
@@ -284,28 +301,11 @@ def build_cues(lines: list[dict], line_times: list[dict], duration: float, sub_s
             snapped = bounds[k][1] and bounds[k + 1][1]
             conf = lt["conf"] if snapped else "low"
             note = "" if snapped else "문장 안에서 나눈 위치는 쉼이 없어 길이 비율로 추정했습니다. 들어 보고 조정하세요."
-            raw.append({"line_id": ln["id"], "part": k, "text": p, "s": s, "e": e, "conf": conf, "note": note})
-    # 화면 표시 시간: 말 시작 직전부터, 짧은 쉼은 다음 자막까지 이어 표시
-    cues = []
-    for i, r in enumerate(raw):
-        s = max(0.0, r["s"] - 0.05)
-        if cues:
-            s = max(s, cues[-1]["end"])
-        nxt = raw[i + 1]["s"] - 0.05 if i + 1 < len(raw) else None
-        if nxt is not None and nxt - r["e"] <= fill_under:
-            e = nxt
-        else:
-            e = r["e"] + 0.25
-            if nxt is not None:
-                e = min(e, nxt)
-        e = min(e, duration)
-        if e - s < 0.2:
-            e = min(duration, s + 0.2)
-        cues.append({"id": new_id("c"), "line_id": r["line_id"], "part": r["part"], "text": r["text"],
-                     "start": round(s, 3), "end": round(e, 3), "speech_start": round(r["s"], 3),
-                     "speech_end": round(r["e"], 3), "conf": r["conf"], "method": method_label,
-                     "note": r["note"], "manual_text": False, "manual_time": False})
-    return cues
+            raw.append({"line_id": ln["id"], "part": k, "text": p, "s": s, "e": e, "conf": conf, "note": note,
+                        "src": src[k]})
+    for r in raw:
+        r.update(method=method_label, manual_text=False, manual_time=False)
+    return finalize(raw, duration, fill_under)
 
 
 def align_project(project: dict, data: np.ndarray, sr: int, thr: float, wav_path=None, use_asr: bool = False,
@@ -321,9 +321,11 @@ def align_project(project: dict, data: np.ndarray, sr: int, thr: float, wav_path
     weights = [float(mora_count(ln["tts"])) for ln in lines]
     pause = align_by_pauses(islands, db, weights)
     method = "무음 경계 정렬"
+    check = pause_content_check(lines, pause, weights)
     if use_asr and wav_path is not None:
         chars = whisper_char_times(wav_path, job, initial_prompt="".join(ln["tts"] for ln in lines))
         asr = align_by_asr(chars, [ln["tts"] for ln in lines])
+        check = asr_content_check(lines, chars, asr)
         merged = []
         for p, a in zip(pause, asr):
             if a is None:
@@ -346,6 +348,43 @@ def align_project(project: dict, data: np.ndarray, sr: int, thr: float, wav_path
     if job:
         job.report(0.95, "자막 카드를 만드는 중…")
     cues = build_cues(lines, pause, duration, config.load_settings()["subtitle"], method)
-    return {"cues": cues, "method": method, "duration": round(duration, 3),
+    return {"cues": cues, "method": method, "duration": round(duration, 3), "content_check": check,
             "line_times": [{"line_id": ln["id"], **{k: v for k, v in t.items() if k != "inner_gaps"}}
                            for ln, t in zip(lines, pause)]}
+
+
+# ---------------------------------------------------------------- 음성 ↔ 대본 내용 확인
+
+def pause_content_check(lines: list[dict], times: list[dict], weights: list[float]) -> dict:
+    """음성 인식 없이: 문장 길이가 예상(모라 수 비례)과 크게 다르면 '의심'으로 표시. 내용 일치 검증은 아님."""
+    durs = [max(0.05, t["end"] - t["start"]) for t in times]
+    rate = sum(durs) / max(1e-6, sum(weights))
+    items = []
+    for ln, t, w, d in zip(lines, times, weights, durs):
+        ratio = d / max(0.05, w * rate)
+        if ratio > 1.7 or ratio < 0.6:
+            items.append({"line_id": ln["id"], "kind": "length",
+                          "message": f"실제 길이가 예상의 {ratio:.1f}배입니다. 문장 누락·추가·다르게 읽음일 수 있습니다(길이 기준 추정)."})
+        elif t.get("virtual"):
+            items.append({"line_id": ln["id"], "kind": "no_pause",
+                          "message": "앞뒤 쉼이 없어 문장 경계를 추정했습니다. 들어서 확인하세요."})
+    return {"method": "pause", "verified": False, "items": items}
+
+
+def asr_content_check(lines: list[dict], chars, asr) -> dict:
+    """음성 인식 결과와 대본(읽기)을 대조: 찾지 못한 문장, 대본에 없는 말을 보여준다. 인식도 틀릴 수 있음."""
+    items = []
+    for ln, a in zip(lines, asr):
+        if a is None or a["coverage"] < 0.6:
+            cov = 0 if a is None else int(a["coverage"] * 100)
+            items.append({"line_id": ln["id"], "kind": "missing",
+                          "message": f"음성에서 이 문장을 찾지 못했거나 다르게 들립니다(인식 일치율 {cov}%)."})
+    script = [c for ln in lines for c in to_hira(ln["tts"]) if _is_kana(c)]
+    heard = [c for c, _, _ in chars]
+    sm = difflib.SequenceMatcher(None, script, heard, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag in ("insert", "replace") and (j2 - j1) >= 5 and (j2 - j1) > 2 * (i2 - i1):
+            items.append({"line_id": None, "kind": "extra", "heard": "".join(heard[j1:j2]),
+                          "at": round(chars[j1][1], 2),
+                          "message": f"대본에 없는 말이 음성에 있습니다({chars[j1][1]:.1f}초 부근)."})
+    return {"method": "asr", "verified": True, "items": items}

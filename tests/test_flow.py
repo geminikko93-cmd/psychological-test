@@ -44,7 +44,8 @@ def test_flow_full_flow(client, configure_ai, tmp_path):
     pr["audio"]["processed"] = wait_job(client, client.post(f"/api/projects/{pid}/audio/apply", json=body).json())["result"]["processed"]
     pr = client.put(f"/api/projects/{pid}", json={"project": pr, "base_rev": pr["rev"]}).json()["project"]
     r = wait_job(client, client.post(f"/api/projects/{pid}/subtitles/align", json={}).json())["result"]
-    pr["subtitles"].update(cues=r["cues"], based_on_audio_version=r["audio_version"], based_on_display_hash=r["display_hash"])
+    pr["subtitles"].update(cues=r["cues"], based_on_audio_version=r["audio_version"], based_on_display_hash=r["display_hash"],
+                           based_on_tts_hash=r["tts_hash"], line_texts=r["proposal"]["fresh"]["line_texts"])
     pr = client.put(f"/api/projects/{pid}", json={"project": pr, "base_rev": pr["rev"]}).json()["project"]
     plan = client.post(f"/api/projects/{pid}/flow/plan").json()
     assert plan["timing"] == "실제"

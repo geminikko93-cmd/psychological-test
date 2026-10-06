@@ -1,6 +1,6 @@
 import { api, runJob, mediaUrl } from "../api.js";
 import { state, changed, flush } from "../state.js";
-import { h, clear, section, field, bindInput, select, confirmBox, modal, toast, empty, fmtSec, fmtTime, copyText, showError } from "../ui.js";
+import { h, clear, section, field, bindInput, select, confirmBox, modal, toast, empty, fmtSec, fmtTime, copyText, showError, promptBox } from "../ui.js";
 import { go, rerender } from "../nav.js";
 
 const MODES = [["natural", "자연스럽게"], ["fast", "빠르게"], ["custom", "직접 설정"]];
@@ -130,6 +130,23 @@ export async function renderAudio(page) {
   if (!a.original) return;
 
   const o = a.original;
+  if (state.status?.audio_mismatch) {
+    const ack = state.status.audio_mismatch_ack;
+    page.append(h("div", { class: `banner ${ack ? "" : "stale"}` },
+      h("div", {},
+        h("b", {}, ack ? "대본과 다른 음성을 사용 중(사용자 확인)" : "이 음성은 현재 TTS 낭독문과 다릅니다."),
+        h("div", { class: "small" }, ack
+          ? `기록한 이유: ${a.mismatch_ack?.reason || ""} · ${fmtTime(a.mismatch_ack?.at)}`
+          : "음성을 넣은 뒤 낭독문이 바뀌었습니다. 이대로는 내보낼 수 없습니다. 바뀐 낭독문으로 타입캐스트에서 다시 만들어 넣는 것을 권장합니다. 한국어 의미·메모·화면 표시만 바꾼 경우에는 이 표시가 나오지 않습니다.")),
+      ack
+        ? h("button", { class: "small", onclick: () => { delete a.mismatch_ack; changed(true); setTimeout(rerender, 300); } }, "확인 취소")
+        : h("button", { class: "small", onclick: async () => {
+          const reason = await promptBox("이 음성 그대로 쓰기", "왜 다시 만들지 않는지 적어 주세요(예: 문장부호만 바꿈, 읽기는 같음)", "");
+          if (!reason || !reason.trim()) { toast("이유를 적어야 예외로 처리됩니다.", "info"); return; }
+          a.mismatch_ack = { tts_hash: state.status.tts_hash, audio_sha: o.sha256, reason: reason.trim(), at: new Date().toISOString() };
+          changed(true); await flush(); rerender();
+        } }, "이 음성 그대로 쓰기(이유 기록)")));
+  }
   const origAudio = h("audio", { controls: true, preload: "auto", src: mediaUrl(p.id, o.file, o.sha256) });
   page.append(section("원본 음성",
     h("div", { class: "kvs" },
@@ -283,9 +300,9 @@ export async function renderAudio(page) {
       stat("줄어든 시간", `${(pr.removed_s || 0).toFixed(2)}초 (${pr.original_duration ? Math.round((pr.removed_s / pr.original_duration) * 100) : 0}%)`),
       stat("방식", pr.mode === "original" ? "원본 그대로" : (MODES.find((m) => m[0] === pr.mode)?.[1] || pr.mode)),
       stat("바뀐 구간", `${pr.regions_changed ?? 0}개`), stat("확인 권장", `${pr.uncertain ?? 0}개`)),
-    h("div", { class: `note ${v.ok ? "ok" : "warn"}` }, h("b", {}, "발음 잘림 검증: "), v.summary || "-",
+    h("div", { class: `note ${v.ok ? "ok" : "warn"}` }, h("b", {}, "음량 기준 점검: "), v.summary || "-",
       v.removed_max_db !== undefined ? ` (잘라낸 부분 최대 ${v.removed_max_db}dB / 기준 ${v.threshold_db}dB, 가장 가까운 소리까지 ${v.min_distance_to_speech_ms ?? "-"}ms)` : ""),
-    h("div", { class: "muted small" }, "재생 속도는 바꾸지 않았습니다. 무음 구간의 가운데만 잘라냈습니다. 그래도 '확인 권장' 구간은 직접 들어 보세요."),
+    h("div", { class: "muted small" }, "재생 속도는 바꾸지 않았습니다. 무음 구간의 가운데만 잘라냈습니다. 음량 기준 점검은 '발음이 잘리지 않았다'는 보장이 아니므로 '확인 권장' 구간은 직접 들어 보세요."),
     h("div", { class: "ab" },
       h("div", {}, h("b", {}, "원본"), origAudio.cloneNode()),
       h("div", {}, h("b", {}, "정리본"), procAudio)),
@@ -331,7 +348,7 @@ function setProcessed(proc) {
   changed(true);
   toast(`최종 음성 버전 ${proc.version}을 만들었습니다. ${proc.removed_s.toFixed(2)}초 줄었습니다.`, "ok",
     (state.project.subtitles?.cues || []).length ? "음성이 바뀌어 자막을 다시 맞춰야 합니다." : "");
-  if (!proc.verify?.ok) toast("발음 잘림 검증에서 확인이 필요한 결과가 나왔습니다.", "warn", proc.verify?.summary);
+  if (!proc.verify?.ok) toast("음량 기준 점검에서 확인이 필요한 결과가 나왔습니다.", "warn", proc.verify?.summary);
   rerender();
 }
 

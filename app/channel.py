@@ -37,9 +37,40 @@ def load() -> dict:
             atomic_write_text(f, json.dumps(data, ensure_ascii=False, indent=1))
             return data
         try:
-            return json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8"))
         except ValueError as e:
             raise UserError("채널 설정 파일이 손상되었습니다.", f"{f} 를 확인하세요.") from e
+        if int(data.get("seed_version") or 1) < 2:
+            data = _upgrade_seed(f, data)
+        return data
+
+
+def _upgrade_seed(f, data: dict) -> dict:
+    """기본값 개선(v2): 사용자가 고치지 않은 기본 문구만 새 기본값으로 바꾼다. 고친 항목·추가 주제·상태는 그대로.
+    바꾸기 전 원본은 channel_backup_*.json 으로 보관."""
+    old_file = SEED_FILE.with_name("channel_seed_v1.json")
+    try:
+        old = json.loads(old_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return data
+    new = _seed()
+    atomic_write_text(f.with_name(f"channel_backup_{now_iso()[:19].replace(':', '').replace('-', '')}.json"),
+                      json.dumps(data, ensure_ascii=False, indent=1))
+    prof, oldp, newp = data.setdefault("profile", {}), old.get("profile", {}), new.get("profile", {})
+    updated = []
+    for k in ("genre", "value", "format", "rules"):
+        if prof.get(k) == oldp.get(k) and k in newp:
+            prof[k] = newp[k]
+            updated.append(k)
+    old_angles = {t["id"]: t.get("angle_ko") for t in old.get("topics", [])}
+    new_angles = {t["id"]: t.get("angle_ko") for t in new.get("topics", [])}
+    for t in data.get("topics", []):
+        if t.get("id") in old_angles and t.get("angle_ko") == old_angles[t["id"]] and t["id"] in new_angles:
+            t["angle_ko"] = new_angles[t["id"]]
+    data["seed_version"] = 2
+    data.setdefault("migrations", []).append({"to": "seed_v2", "at": now_iso(), "updated_profile_keys": updated})
+    atomic_write_text(f, json.dumps(data, ensure_ascii=False, indent=1))
+    return data
 
 
 def save(data: dict) -> dict:

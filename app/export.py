@@ -4,8 +4,11 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
+import secrets
 import shutil
+import threading
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +20,7 @@ from .sources import verify_media
 from .srt import build_srt, check_cues, fmt_time
 from .util import UserError, atomic_write_text, safe_filename
 
+BOM = chr(0xFEFF)  # 엑셀·일부 편집기용 UTF-8 BOM
 KIND_LABEL = {"entertainment": "창작 오락 콘텐츠", "factual": "사실 기반 콘텐츠", "undecided": "미정"}
 
 
@@ -57,8 +61,8 @@ def credits_text(p: dict) -> str:
     return "\n".join(lines)
 
 
-def precheck(pid: str) -> dict:
-    p = storage.load_project(pid)
+def precheck(pid: str, p: dict | None = None) -> dict:
+    p = p if p is not None else storage.load_project(pid)
     st = storage.compute_status(p)
     sub_settings = config.load_settings()["subtitle"]
     items: list[dict] = []
@@ -84,9 +88,15 @@ def precheck(pid: str) -> dict:
             ok, err = A.verify_playable(f)
             if not ok:
                 add("error", "최종 음성 파일을 재생할 수 없습니다: " + err)
-    if st["steps"]["audio"]["state"] == "stale":
+    mm = storage.audio_mismatch(p)
+    if mm["mismatch"] and not mm["acknowledged"]:
+        add("error", "음성이 현재 대본(TTS 낭독문)과 다릅니다. 이대로면 자막·음성이 맞지 않는 영상이 됩니다.",
+            "타입캐스트에서 바뀐 낭독문으로 다시 만들어 넣거나, 음성 단계에서 '이 음성 그대로 쓰기(이유 기록)'를 선택하세요.")
+    elif mm["mismatch"]:
+        add("warn", f"대본과 다른 음성을 사용자가 확인하고 사용 중: {mm['ack'].get('reason', '')}")
+    if st["steps"]["audio"]["state"] == "stale" and not mm["mismatch"]:
         for n in st["steps"]["audio"]["notes"]:
-            add("warn", n)
+            add("stale", n, "음성 단계에서 무음 정리를 다시 적용하세요.")
     cues = (p.get("subtitles") or {}).get("cues") or []
     if not cues:
         add("error", "자막이 없습니다.", "자막 단계에서 자막을 생성하세요.")
@@ -102,9 +112,10 @@ def precheck(pid: str) -> dict:
             add("warn", f"자막 확인 권장 항목 {warn_n}개(너무 짧음·빠름·신뢰도 낮음 등)")
     scenes = (p.get("script") or {}).get("scenes", [])
     srcs = (p.get("sources") or {}).get("items", [])
+    from .flow import scene_mode
     for i, sc in enumerate(scenes, 1):
         mine = [s for s in srcs if s.get("scene_id") == sc["id"] and s.get("status") == "acquired"]
-        if not mine and not sc.get("no_source_needed"):
+        if not mine and not sc.get("no_source_needed") and scene_mode(p, sc) != "text":
             add("warn", f"장면 {i}에 확보된 영상·이미지가 없습니다.", "영상소스 단계에서 파일을 넣거나 '소스 불필요'로 표시하세요.")
     for s in srcs:
         if s.get("status") != "acquired":
@@ -150,18 +161,97 @@ def _slug(name: str) -> str:
     return re.sub(r"\.+", "_", s)
 
 
-def build_package(pid: str, make_zip: bool = True, allow_stale: bool = False) -> dict:
-    pc = precheck(pid)
+_name_lock = threading.Lock()
+_reserved: set[str] = set()
+
+
+def _next_version(exports: Path) -> int:
+    n = 0
+    for f in list(exports.iterdir()) + [exports / r for r in _reserved]:
+        m = re.search(r"_v(\d+)_", f.name)
+        if m:
+            n = max(n, int(m.group(1)))
+    return n + 1
+
+
+def build_package(pid: str, make_zip: bool = True, allow_stale: bool = False, job=None) -> dict:
+    """내보내기. 시작 시점의 프로젝트를 스냅샷으로 고정하고, 임시 폴더에 만든 뒤
+    검증을 통과해야만 고유한 이름(시각+버전)의 최종 폴더로 확정한다.
+    기존 내보내기 폴더·사용자가 넣은 파일은 절대 지우지 않는다. 실패·취소 시 이번 임시 파일만 정리."""
+    p = storage.load_project(pid)  # 스냅샷: 이후 프로젝트가 바뀌어도 이번 결과물에는 섞이지 않음
+    pc = precheck(pid, p)
     if pc["blocking"]:
         raise UserError("내보내기 전에 고쳐야 할 오류가 있습니다.", " / ".join(i["message"] for i in pc["items"] if i["level"] == "error"))
     if pc["has_stale"] and not allow_stale:
-        raise UserError("최신이 아닌 자막이 있습니다.", "자막을 다시 맞추거나, 그대로 내보내려면 '최신 아님 무시하고 내보내기'를 선택하세요.", 409)
-    p = storage.load_project(pid)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    out = storage.project_dir(pid) / "exports" / f"{stamp}_{_slug(p.get('name'))}"
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
+        raise UserError("최신이 아닌 항목이 있습니다.", "다시 맞추거나 다시 계산한 뒤 내보내세요. 그대로 내보내려면 확인 후 '최신 아님 무시하고 내보내기'를 선택하세요.", 409)
+
+    def check():
+        if job is not None:
+            job.check()
+
+    exports = storage.project_dir(pid) / "exports"
+    exports.mkdir(exist_ok=True)
+    tmp = exports / f".tmp_{secrets.token_hex(6)}"
+    tmp.mkdir()
+    tmp_zip = exports / f".tmp_{secrets.token_hex(6)}.zip"
+    reserved = None
+    try:
+        files = _write_package(pid, p, tmp, check)
+        check()
+        if job is not None:
+            job.report(0.7, "내보낸 파일 검증 중(재생 가능·자막 형식·비밀값)…")
+        verify = verify_package(tmp)
+        if verify["secret_found"]:
+            raise UserError("내보낸 파일에서 API 키와 같은 문자열이 발견되어 내보내기를 확정하지 않았습니다.",
+                            "메모·설명문 칸에 키를 붙여 넣지 않았는지 확인하세요.")
+        if not verify["all_ok"]:
+            bad = [f"{r['file']}: {r['note'][:120]}" for r in verify["files"] if not r["ok"]]
+            raise UserError("내보낸 파일 검증에 실패해 결과를 확정하지 않았습니다.",
+                            "문제 파일: " + " / ".join(bad[:5]) + " — 해당 파일을 다시 넣거나 빼고 다시 내보내세요.", 422)
+        check()
+        with _name_lock:
+            version = _next_version(exports)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            name = f"{stamp}_v{version:02d}_{_slug(p.get('name'))}"
+            while (exports / name).exists() or (exports / f"{name}.zip").exists() or name in _reserved:
+                version += 1
+                name = f"{stamp}_v{version:02d}_{_slug(p.get('name'))}"
+            _reserved.add(name)
+            reserved = name
+        zip_final = None
+        if make_zip:
+            if job is not None:
+                job.report(0.85, "ZIP 만드는 중…")
+            with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as z:
+                for f in sorted(tmp.rglob("*")):
+                    check()
+                    if f.is_file():
+                        z.write(f, (Path(name) / f.relative_to(tmp)).as_posix())
+            with zipfile.ZipFile(tmp_zip) as z:
+                bad = z.testzip()
+            if bad:
+                raise UserError(f"ZIP 파일 검증에 실패했습니다: {bad}")
+        check()
+        final = exports / name
+        os.replace(tmp, final)
+        if make_zip:
+            zip_final = exports / f"{name}.zip"
+            os.replace(tmp_zip, zip_final)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)  # 이번 작업의 임시 폴더만 정리
+        if tmp_zip.exists():
+            tmp_zip.unlink(missing_ok=True)
+        raise
+    finally:
+        if reserved:
+            with _name_lock:
+                _reserved.discard(reserved)
+    return {"folder": str(final), "zip": str(zip_final) if zip_final else None, "files": files, "verify": verify,
+            "precheck": pc, "version": version, "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "basis": storage.export_basis(p), "project_rev": p.get("rev")}
+
+
+def _write_package(pid: str, p: dict, out: Path, check) -> list[dict]:
     files: list[dict] = []
 
     def rec(path: Path, desc: str):
@@ -171,16 +261,18 @@ def build_package(pid: str, make_zip: bool = True, allow_stale: bool = False) ->
     proc = audio["processed"]
     f_final = out / "01_FINAL_최종음성_무음정리.wav"
     shutil.copy2(storage.media_path(pid, proc["file"]), f_final)
+    check()
     rec(f_final, "CapCut에 넣을 최종 음성(무음 정리 완료)")
     srt_text = build_srt(p["subtitles"]["cues"])
     f_srt = out / "02_FINAL_자막_ja.srt"
-    bom = "﻿" if config.load_settings()["subtitle"].get("srt_bom") else ""
+    bom = BOM if config.load_settings()["subtitle"].get("srt_bom") else ""
     f_srt.write_bytes((bom + srt_text).encode("utf-8"))
     rec(f_srt, "최종 음성에 맞춘 일본어 자막(UTF-8)")
     orig = audio["original"]
     ext = orig["file"].rsplit(".", 1)[-1]
     f_orig = out / f"03_원본음성_타입캐스트_ORIGINAL.{ext}"
     shutil.copy2(storage.media_path(pid, orig["file"]), f_orig)
+    check()
     rec(f_orig, "타입캐스트 원본 음성(편집에 쓰지 않음, 보관용)")
 
     src_dir = out / "04_영상소스"
@@ -205,6 +297,7 @@ def build_package(pid: str, make_zip: bool = True, allow_stale: bool = False) ->
                 base = safe_filename(Path(s.get("orig_name") or "source").stem, "source", 30)
                 name = f"S{si:02d}_{k_other:02d}_{base}.{fext}"
             shutil.copy2(storage.media_path(pid, s["file"]), src_dir / name)
+            check()
             src_names[s["id"]] = name
         t = timings.get(sc["id"], {})
         rows.append({
@@ -227,7 +320,7 @@ def build_package(pid: str, make_zip: bool = True, allow_stale: bool = False) ->
     w.writeheader()
     w.writerows(rows)
     f_csv = out / "05_장면표_시간_소스.csv"
-    f_csv.write_bytes(("﻿" + buf.getvalue()).encode("utf-8"))  # 엑셀 한글·일본어 깨짐 방지
+    f_csv.write_bytes((BOM + buf.getvalue()).encode("utf-8"))  # 엑셀 한글·일본어 깨짐 방지
     rec(f_csv, "장면별 시간·소스 매칭표(엑셀로 열기)")
     for name in src_names.values():
         rec(src_dir / name, "장면 소스")
@@ -238,7 +331,10 @@ def build_package(pid: str, make_zip: bool = True, allow_stale: bool = False) ->
             it = items_by_id.get(c.get("item_id"))
             crow.append({"장면": c["scene_no"], "클립": c["index_in_scene"], "배치 시작": fmt_time(c["start"]),
                          "배치 끝": fmt_time(c["end"]), "필요 길이(초)": c["need_s"], "Flow 생성 길이(초)": c["duration"],
-                         "잘라낼 꼬리(초)": round(max(0, c["duration"] - c["need_s"]), 2),
+                         "사용할 구간(파일 기준)": f"0초 ~ {c['need_s']}초",
+                         "잘라낼 꼬리(초, 실제 파일 기준)": (round(max(0, it["duration"] - c["need_s"]), 2)
+                                                     if it and it.get("duration") else "(파일 길이 미확인)"),
+                         "부족한 길이(초)": (round(max(0, c["need_s"] - it["duration"]), 2) if it and it.get("duration") else ""),
                          "파일": src_names.get(c.get("item_id"), "(아직 없음)"),
                          "실제 파일 길이(초)": (it or {}).get("duration") or "", "Flow 모드": c.get("mode", ""),
                          "프롬프트(영어)": c.get("prompt_en", ""), "프롬프트 의미": c.get("prompt_ko", "")})
@@ -247,10 +343,11 @@ def build_package(pid: str, make_zip: bool = True, allow_stale: bool = False) ->
         w2.writeheader()
         w2.writerows(crow)
         f_clip = out / "05b_Flow_클립_배치표.csv"
-        f_clip.write_bytes(("﻿" + b2.getvalue()).encode("utf-8"))  # 엑셀 한글·일본어 깨짐 방지
+        f_clip.write_bytes((BOM + b2.getvalue()).encode("utf-8"))  # 엑셀 한글·일본어 깨짐 방지
         rec(f_clip, "Flow 클립별 배치 시간·생성 길이·파일")
         st = (p.get("flow") or {}).get("style") or {}
-        fl_lines = ["# Google Flow (Gemini Omni Flash 1.1) 영상 프롬프트", "",
+        from .flow import PRODUCT_LABEL
+        fl_lines = [f"# {PRODUCT_LABEL} 영상 프롬프트", "",
                     "## 공통 스타일", st.get("look_en", ""), st.get("look_ko", ""), "", "피할 것: " + st.get("avoid_en", ""), ""]
         for c in clips:
             fl_lines += [f"## 장면 {c['scene_no']} · 클립 {c['index_in_scene']} — Flow 길이 {c['duration']}초 "
@@ -339,30 +436,15 @@ def build_package(pid: str, make_zip: bool = True, allow_stale: bool = False) ->
     clean = json.loads(json.dumps(p))
     clean.pop("ai_log", None)
     (pdir / "project.json").write_text(json.dumps(clean, ensure_ascii=False, indent=1), encoding="utf-8")
+    check()
     shutil.copytree(storage.project_dir(pid) / "media", pdir / "media")
+    check()
     rec(pdir / "project.json", "프로그램에서 [프로젝트 가져오기]로 다시 열 수 있는 데이터")
 
-    readme = ["이 폴더의 파일 목록", ""] + [f"- {f['file']}: {f['desc']}" for f in files]
+    readme = ["이 폴더의 파일 목록", "", f"프로젝트 리비전: {p.get('rev')} (내보내기 시작 시점 스냅샷)", ""] + \
+        [f"- {f['file']}: {f['desc']}" for f in files]
     atomic_write_text(out / "파일목록.txt", "\n".join(readme))
-
-    verify = verify_package(out)
-    if verify["secret_found"]:
-        shutil.rmtree(out, ignore_errors=True)
-        raise UserError("내보낸 파일에서 API 키와 같은 문자열이 발견되어 내보내기를 취소했습니다.",
-                        "메모·설명문 칸에 키를 붙여 넣지 않았는지 확인하세요.")
-    zip_path = None
-    if make_zip:
-        zip_path = out.with_suffix(".zip")
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-            for f in sorted(out.rglob("*")):
-                if f.is_file():
-                    z.write(f, (Path(out.name) / f.relative_to(out)).as_posix())
-        with zipfile.ZipFile(zip_path) as z:
-            bad = z.testzip()
-        if bad:
-            raise UserError(f"ZIP 파일 검증에 실패했습니다: {bad}")
-    return {"folder": str(out), "zip": str(zip_path) if zip_path else None, "files": files, "verify": verify,
-            "precheck": pc, "exported_at": datetime.now().isoformat(timespec="seconds")}
+    return files
 
 
 def verify_package(out: Path) -> dict:

@@ -31,6 +31,9 @@ SYSTEM = """あなたは日本語ショート動画(YouTube Shorts / Instagram R
 9. 毎回同じ「質問→3択→性格結果」の型にしない。テーマに合わせて構成・場面数・選択肢の有無と数を判断する。
 10. 制作者の過去作品と、質問・結果・展開・言い回しが重ならないようにする。
 11. あなたの日本語チェックはネイティブ校閲ではない。不確かな表現は韓国語の注意メモで知らせる。
+12. 動物や物を選んだというだけで、その人の実際の性格・習慣を断定しない。選ぶ状況と結果が自然につながるようにする。
+13. 結果を見せるまでに不要な待ち時間を作らない。締めの行動提案は意味がある時だけ入れる。
+14. 企画・台本段階の秒数は推定であり、最終の長さは実際の Typecast 音声で決まる。
 
 出力は指定された JSON オブジェクトのみ。前置き・後書き・コードフェンスは付けない。"""
 
@@ -45,33 +48,17 @@ def history_block(history: list[dict]) -> str:
     return _json(history)
 
 
-def plan_prompt(idea: dict, history: list[dict], feedback: str = "", previous_candidates: list | None = None) -> str:
-    prev = ""
-    if previous_candidates:
-        prev = ("\n\n前回提案した候補(これらと異なる方向を出すこと。ただしフィードバックがあればそれを優先):\n"
-                + _json([{k: c.get(k) for k in ("approach_name_ko", "format_ko", "first_line_ja")} for c in previous_candidates]))
-    fb = f"\n\n制作者からのフィードバック(韓国語):\n{feedback}" if feedback.strip() else ""
-    return f"""次のアイデアについて、ショート動画の企画方向を3案提案してください。
+CONTENT_TYPES = ["選択型の問いかけ", "観察・あるある共感", "短い物語・場面", "比較・対決", "想像シナリオ",
+                 "クイズ・推理", "小さな実験・やってみる", "事実の発見(根拠必要)"]
+VIEWER_ACTIONS = ["選ぶ", "思い出す", "当てる・推理する", "共感する", "想像する", "やってみる", "コメントで答える"]
+ENDING_TYPES = ["結果公開", "どんでん返し", "問いを残す", "小さな行動提案", "オチ・笑い", "次への引き"]
 
-## 制作者の入力(韓国語の場合あり)
-{_json(idea)}
-
-## 過去作品の要約(重複を避けるための参考)
-{history_block(history)}{prev}{fb}
-
-## 求めること
-- 3案は「表現違い」ではなく「アプローチ違い」にする。例: 問いかけ型 / 意外な事実から入る型 / 小さな物語型 /
-  比較・ランキング型 / 視聴者参加型 / 観察・あるある型 など。テーマに合うものを自分で判断し、型に縛られない。
-- 各案で次を判断する: 視聴者が興味を持つ理由、最初の場面と最初の一文、展開方法、必要な場面数と順番、
-  選択肢が必要か(必要なら何個が適切か、不要ならなぜか)、結果や結末の面白さ、次の動画も見たくなる要素、
-  必要な視覚素材とその入手しやすさ、娯楽/事実の区別と主張の強さ、リスク。
-- 目標尺: {idea.get('target_seconds', 35)}秒前後。
-
-## 出力 JSON 形式
-{{
- "candidates": [
-  {{
+CANDIDATE_SCHEMA = """{
    "id": "A",
+   "core_idea_ko": "핵심 아이디어 한 줄",
+   "content_type": "콘텐츠 종류(아래 목록 중 하나 또는 새 이름)",
+   "viewer_action": "시청자가 영상 중에 실제로 하는 행동",
+   "ending_type": "결말 유형",
    "approach_name_ko": "접근 방식 이름",
    "format_ko": "전개 방식 설명(2~3문장)",
    "content_kind": "entertainment | factual",
@@ -80,23 +67,101 @@ def plan_prompt(idea: dict, history: list[dict], feedback: str = "", previous_ca
    "first_line_ja": "첫 문장(일본어)",
    "first_line_ko": "첫 문장의 한국어 의미",
    "structure_ko": ["장면 1: ...", "장면 2: ..."],
-   "scene_count": 5,
-   "choices": {{"use": true, "count": 2, "reason_ko": "선택지를 쓰는/안 쓰는 이유와 개수 판단"}},
-   "payoff_ko": "결과·결말의 재미(구체적으로)",
+   "scene_count": 4,
+   "choices": {"use": false, "count": null, "reason_ko": "선택지를 쓰는/안 쓰는 이유와 개수 판단"},
+   "payoff_ko": "결말·결과의 재미(구체적으로)",
+   "ending_ko": "마지막 장면과 마무리(행동 제안은 의미가 있을 때만)",
    "next_video_pull_ko": "다음 영상도 보고 싶게 만드는 요소(업로드 약속 표현 없이)",
    "visuals_ko": ["필요한 시각 자료"],
-   "source_difficulty_ko": "소스 확보 난이도와 대안",
+   "production_load_ko": "제작 부담(소스·편집 난이도, 낮음/보통/높음과 이유)",
+   "source_difficulty_ko": "소스 확보 난이도(AI 추정)",
    "claims_ko": "주장 수준과 근거 필요 여부",
    "risks_ko": "주의점",
+   "differs_from_ko": "다른 후보와 무엇이 실질적으로 다른지(시청자 행동·전개 순서·결말·시각 자료 기준)",
    "overlap_check_ko": "과거 작품과 겹치지 않게 한 점",
    "estimated_seconds": 35
-  }}
+  }"""
+
+
+def _production_block(production: dict | None) -> str:
+    if not production:
+        return ""
+    return f"\n\n## 映像の制作方式(制作者が選択)\n{_json(production)}\n(この方式で作りやすい場面・視覚素材にすること)"
+
+
+def plan_prompt(idea: dict, history: list[dict], feedback: str = "", previous_candidates: list | None = None,
+                production: dict | None = None) -> str:
+    prev = ""
+    if previous_candidates:
+        prev = ("\n\n前回提案した候補(これらと異なる方向を出すこと。ただしフィードバックがあればそれを優先):\n"
+                + _json([{k: c.get(k) for k in ("core_idea_ko", "content_type", "viewer_action", "ending_type", "first_line_ja")}
+                         for c in previous_candidates]))
+    fb = f"\n\n制作者からのフィードバック(韓国語):\n{feedback}" if feedback.strip() else ""
+    return f"""次のアイデアについて、ショート動画の企画方向を3案提案してください。
+
+## 制作者の入力(韓国語の場合あり)
+{_json(idea)}{_production_block(production)}
+
+## 過去作品の要約(重複を避けるための参考)
+{history_block(history)}{prev}{fb}
+
+## 候補の分け方(最重要)
+- 3案は「表現違い」ではなく「視聴者の体験が違う」案にする。次の軸で比べたとき、どの2案も少なくとも2つの軸で異なること:
+  1) content_type(コンテンツの種類) 例: {", ".join(CONTENT_TYPES)}
+  2) viewer_action(視聴者が動画の間に実際にすること) 例: {", ".join(VIEWER_ACTIONS)}
+  3) 展開の順番(structure_ko)
+  4) ending_type(結末の種類) 例: {", ".join(ENDING_TYPES)}
+  5) 必要な視覚素材
+- 同じ質問で動物・物・結果の言い回しだけを変えた案は「同じ案」とみなす。そのような案を出さない。
+- チャンネルの方向性は守るが、毎回「質問→選択→結果」の型に固定しない。テーマに合えば選択肢を使わない案も検討する。
+- 各案の differs_from_ko に、他の2案と具体的に何が違うかを書く。
+
+## 内容の原則
+- 創作の娯楽の問いを科学的な性格診断のように見せない。
+- 動物や物を選んだというだけで、その人の実際の性格・習慣を断定しない(「〜かもしれない」「〜な見方もできる」程度に)。
+- 選ぶ状況と結果が自然につながるようにする(なぜその選択からその結果になるのかが伝わること)。
+- 結果を見せるまでに不要な待ち時間を作らない。
+- 締めの行動提案は意味がある時だけ入れる。
+- 秒数は企画段階の推定であり、最終の長さは実際の Typecast 音声で決まる。
+- 目標尺: {idea.get('target_seconds', 35)}秒前後(推定)。
+
+## 出力 JSON 形式
+{{
+ "candidates": [
+  {CANDIDATE_SCHEMA}
  ],
- "comparison_ko": "세 안의 차이 요약"
+ "comparison_ko": "세 안이 시청자 경험(행동·전개·결말·시각 자료) 면에서 어떻게 다른지 요약"
 }}"""
 
 
-def script_prompt(idea: dict, plan: dict, history: list[dict], notes: str = "") -> str:
+def plan_one_prompt(idea: dict, history: list[dict], others: list[dict], target_id: str, reason: str,
+                    instruction: str, production: dict | None = None) -> str:
+    ins = f"\n\n## 制作者の追加指示(韓国語)\n{instruction}" if instruction.strip() else ""
+    return f"""ショート動画の企画候補のうち1案だけを作り直してください。
+
+## 制作者の入力
+{_json(idea)}{_production_block(production)}
+
+## 残す他の候補(これらと視聴者の体験が違う案にすること)
+{_json(others)}
+
+## 作り直す理由(自動比較の結果、韓国語)
+{reason}{ins}
+
+## 過去作品の要約
+{history_block(history)}
+
+## ルール
+- content_type・viewer_action・展開の順番・ending_type・視覚素材のうち、少なくとも2つで他のどの候補とも異なること。
+- 同じ質問で選択肢や結果の言い回しだけ変えた案は不可。
+- 娯楽の問いを科学的診断のように見せない。選んだ物だけで性格・習慣を断定しない。結果まで不要な待ちを作らない。
+- id は "{target_id}" のまま。
+
+## 出力 JSON 形式
+{{"candidate": {CANDIDATE_SCHEMA}}}"""
+
+
+def script_prompt(idea: dict, plan: dict, history: list[dict], notes: str = "", production: dict | None = None) -> str:
     extra = f"\n\n## 制作者の追加指示(韓国語)\n{notes}" if notes.strip() else ""
     return f"""選ばれた企画をもとに、日本語ナレーション台本を作ってください。
 
@@ -104,7 +169,7 @@ def script_prompt(idea: dict, plan: dict, history: list[dict], notes: str = "") 
 {_json(idea)}
 
 ## 選ばれた企画(制作者が編集済みの場合あり。これを最優先)
-{_json(plan)}
+{_json(plan)}{_production_block(production)}
 
 ## 過去作品の要約(質問・結果・展開・言い回しを重ねない)
 {history_block(history)}{extra}
@@ -264,7 +329,9 @@ def flow_prompt(idea: dict, plan: dict, scenes: list[dict], clips: list[dict], s
     target = f"\n\n## 今回プロンプトを書くクリップ\n{_json(only_ids)}\n(これ以外のクリップは文脈として参照のみ。出力しない)" if only_ids else ""
     ins = f"\n\n## 制作者の追加指示(韓国語)\n{instruction}" if instruction.strip() else ""
     keep_style = "既存のスタイルガイドを維持し、style_bible は同じ内容で返す。" if style and style.get("look_en") else "最初にスタイルガイドを決める。"
-    return f"""Google Flow の動画生成モデル Gemini Omni Flash 1.1 に入力するプロンプトを作ってください。
+    from .flow import ALLOWED, ASPECT, MODEL_LABEL
+    durs = "/".join(str(d) for d in ALLOWED)
+    return f"""Google Flow の動画生成モデル {MODEL_LABEL} に入力するプロンプトを作ってください。
 制作者は各クリップを Flow で生成し、CapCut でナレーション(Typecast音声)と字幕を重ねて編集します。
 
 ## アイデア
@@ -276,7 +343,7 @@ def flow_prompt(idea: dict, plan: dict, scenes: list[dict], clips: list[dict], s
 ## 台本(シーンごと、表示用日本語と韓国語の意味)
 {_json(scenes)}
 
-## クリップ計画(各クリップは最終音声のこの区間に置く。duration は Flow で選ぶ長さ: 4/6/8/10秒)
+## クリップ計画(各クリップは最終音声のこの区間に置く。duration は Flow で選ぶ長さ: {durs}秒)
 {_json(clips)}
 
 ## 既存スタイルガイド
@@ -286,7 +353,7 @@ def flow_prompt(idea: dict, plan: dict, scenes: list[dict], clips: list[dict], s
 - {keep_style} 全クリップで人物・場所・色調・画風・カメラの言語を統一し、各プロンプトにスタイルの要点を毎回含める(Flowは各生成が独立しているため)。
 - prompt_en は英語。構成: 被写体 → 動作 → 場所 → カメラ(画角・動き) → 光・色 → スタイル → 時間配分。
   例: "0-2s: ..., 2-5s: ..." のように、そのクリップが覆うナレーションのタイミングに合わせて展開を書く(duration 秒に収める)。
-- 縦長 9:16 の構図を前提にする(主題を画面中央〜上2/3に。下部は字幕と UI で隠れる)。
+- 縦長 {ASPECT} の構図を前提にする(主題を画面中央〜上2/3に。下部は字幕と UI で隠れる)。
 - 画面内に文字・字幕・ロゴ・透かしを入れない(字幕は CapCut で入れる)。"no on-screen text, no captions, no logos" を含める。
 - ナレーションは別に入れるので、話す人物・口の動き・セリフは入れない。音は環境音のみ("no dialogue, no speech, ambient sound only")。
 - 実在の人物・有名人・商標・特定ブランドを描写しない。子どもを主役にしない。

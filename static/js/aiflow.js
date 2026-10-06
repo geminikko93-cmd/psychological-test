@@ -30,12 +30,22 @@ export function usageText(log) {
   return s;
 }
 
-export async function runAi(task, body = {}) {
+// guard: 결과가 덮어쓸 부분을 문자열로 돌려주는 함수. 요청 뒤 사용자가 그 부분을 고쳤으면 적용 전에 묻는다.
+export async function runAi(task, body = {}, opts = {}) {
   if (!aiReady()) { await needConnection(); return null; }
-  await flush();
+  if (!(await flush())) { toast("저장되지 않은 수정이 있어 AI 요청을 보내지 않았습니다. 저장 문제를 먼저 해결하세요.", "error"); return null; }
+  const pid = state.project.id;
+  const before = opts.guard ? opts.guard() : null;
   try {
-    const res = await runJob(api.post(`/api/projects/${state.project.id}/ai/${task}`, body));
+    const res = await runJob(api.post(`/api/projects/${pid}/ai/${task}`, body));
+    if (!state.project || state.project.id !== pid) { toast("AI 응답이 왔지만 다른 프로젝트로 이동해 적용하지 않았습니다.", "info"); return null; }
     if (res?.log) { logAi(res.log); changed(); toast("AI 응답을 받았습니다.", "ok", usageText(res.log)); }
+    if (opts.guard && opts.guard() !== before) {
+      const ok = await modal("AI 요청 이후에 고친 내용이 있습니다",
+        h("p", {}, `AI에게 요청한 뒤 ${opts.what || "이 부분"}을(를) 직접 고쳤습니다. AI 결과를 적용하면 그 수정이 바뀔 수 있습니다.`),
+        [{ label: "적용하지 않음(결과 버림)", value: false }, { label: "AI 결과 적용", value: true, kind: "danger" }]);
+      if (!ok) { toast("AI 결과를 적용하지 않았습니다. 사용량은 위 알림에 기록되어 있습니다.", "info"); return null; }
+    }
     return res;
   } catch (e) {
     if (e.status !== 499) showError(e);

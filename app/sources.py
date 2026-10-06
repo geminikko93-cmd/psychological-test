@@ -41,7 +41,7 @@ def verify_media(path: Path) -> tuple[bool, str]:
     return True, ""
 
 
-FLOW_LICENSE = ("Google Flow(Gemini Omni Flash)로 직접 생성한 영상입니다. Flow·Google 생성형 AI 이용약관을 확인하고, "
+FLOW_LICENSE = ("Google Flow로 직접 생성한 영상입니다. Flow·Google 생성형 AI 이용약관을 확인하고, "
                 "사실적인 AI 영상이면 YouTube '변경되거나 합성된 콘텐츠' 공개, Instagram AI 라벨이 필요한지 게시할 때 확인하세요.")
 
 

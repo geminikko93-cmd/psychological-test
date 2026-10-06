@@ -16,7 +16,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 _TMP = Path(tempfile.mkdtemp(prefix="jpss_test_"))
 os.environ["JPSS_DATA_DIR"] = str(_TMP / "data")
 os.environ["JPSS_CONFIG_DIR"] = str(_TMP / "cfg")
-os.environ["JPSS_ENV_FILE"] = str(_TMP / "no.env")  # 실제 프로젝트 폴더의 .env(진짜 키)를 시험에서 읽지 않음
+os.environ["JPSS_ENV_FILE"] = str(_TMP / "no.env")
+os.environ["JPSS_PORT"] = "8791"  # 화면 시험용 서버 포트(사용자가 켜 둔 8765와 겹치지 않게)  # 실제 프로젝트 폴더의 .env(진짜 키)를 시험에서 읽지 않음
 _models = os.environ.get("JPSS_TEST_MODELS")  # 이미 받은 whisper 모델 폴더 재사용(선택)
 
 FIX = ROOT / "tests" / "fixtures"
@@ -73,3 +74,35 @@ def configure_ai(client, mock_relay):
         client.put("/api/settings", json={"settings": s})
         client.put("/api/secrets", json={"ai_api_key": key})
     return _cfg
+
+
+UI_PORT = 8791
+
+
+@pytest.fixture(scope="session")
+def ui_server():
+    """화면(프런트엔드) 시험용: 같은 프로세스에서 실제 서버를 띄운다(모의 저장 지연·충돌 주입 가능)."""
+    import uvicorn
+    from app.main import app
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=UI_PORT, log_level="error"))
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+    for _ in range(50):
+        if not _free(UI_PORT):
+            break
+        time.sleep(0.1)
+    yield f"http://127.0.0.1:{UI_PORT}"
+    server.should_exit = True
+
+
+@pytest.fixture(scope="session")
+def browser():
+    pw = pytest.importorskip("playwright.sync_api")
+    with pw.sync_playwright() as p:
+        try:
+            br = p.chromium.launch(channel="chrome", headless=True)
+        except Exception:
+            pytest.skip("Chrome을 찾을 수 없어 화면 시험을 건너뜀")
+        yield br
+        br.close()
