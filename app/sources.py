@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 
 from . import config, storage
-from .util import UserError, ffmpeg_exe, new_id, now_iso, run_tool, safe_filename
+from .util import UserError, ffmpeg_exe, new_id, now_iso, run_tool, safe_filename, sha256_file
 
 ALLOWED_EXT = {"mp4", "mov", "m4v", "webm", "jpg", "jpeg", "png", "webp", "gif"}
 VIDEO_EXT = {"mp4", "mov", "m4v", "webm"}
@@ -73,7 +73,7 @@ def add_local_file(pid: str, filename: str, data: bytes, scene_id: str | None, c
             "page_url": "", "download_url": "", "author": "", "author_url": "",
             "license_note": FLOW_LICENSE if flow else "직접 넣은 파일입니다. 사용 권리(직접 촬영·구매·라이선스)를 확인해 메모하세요.",
             "credit_text": "", "ai_generated": flow, "rights_checked": False, "memo": "", "added_at": now_iso(),
-            "size": dest.stat().st_size, "duration": round(dur, 2) if dur else None}
+            "size": dest.stat().st_size, "duration": round(dur, 2) if dur else None, "sha256": sha256_file(dest)}
 
 
 def _keys() -> dict:

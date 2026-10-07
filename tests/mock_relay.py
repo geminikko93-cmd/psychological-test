@@ -62,11 +62,23 @@ def pick(prompt: str, body: dict) -> dict | str:
     if "Gemini Omni Flash 1.1 に入力するプロンプト" in prompt:
         import re
         ids = list(dict.fromkeys(re.findall(r'"clip_id": "([^"]+)"', prompt)))
+        el_ids = list(dict.fromkeys(re.findall(r'"id": "(el_[^"]+)"', prompt)))
+        # 일부러 화풍을 바꾸려는 응답 + 없는 요소 id → 프로그램이 무시해야 함
         return {"style_bible": {"look_en": "[MOCK] soft warm 3D miniature style, vertical 9:16", "look_ko": "[모의] 따뜻한 3D 미니어처",
                                 "recurring_ko": ["[모의] 방"], "palette_ko": "[모의] 따뜻한 색", "avoid_en": "on-screen text, logos"},
-                "clips": [{"clip_id": i, "prompt_en": f"[MOCK] clip {i}: a door slowly opens, no on-screen text, no dialogue",
-                           "prompt_ko": "[모의] 문이 천천히 열림", "beats_ko": "0~2초: [모의]", "mode": "text",
-                           "mode_note_ko": "[모의]", "risk_ko": ""} for i in ids]}
+                "clips": [{"clip_id": i, "var_en": f"[MOCK] clip {i}: 0-3s slow push-in, curtain sways slightly",
+                           "prompt_en": f"[MOCK] clip {i}: a door slowly opens, no on-screen text, no dialogue",
+                           "var_ko": "[모의] 천천히 다가감", "prompt_ko": "[모의] 문이 천천히 열림", "beats_ko": "0~2초: [모의]",
+                           "gen_mode": "ingredients" if n % 2 == 0 else "text", "mode": "text",
+                           "element_ids": el_ids[:1] + ["el_does_not_exist"], "role": "intro",
+                           "mode_note_ko": "[모의]", "risk_ko": ""} for n, i in enumerate(ids)]}
+    if "繰り返し登場する要素" in prompt:
+        return {"elements": [
+            {"name": "Window", "type": "object", "desc_ko": "[모의] 창문", "fixed_en": "[MOCK] CHANGED window description",
+             "features": {"shape": "round"}, "must_keep_en": ["[MOCK] changed"], "appears_in_scene_ids": [], "reason_ko": "[모의]"},
+            {"name": "Teacup", "type": "object", "desc_ko": "[모의] 찻잔", "fixed_en": "[MOCK] a small white teacup",
+             "features": {"color": "white"}, "must_keep_en": ["white"], "appears_in_scene_ids": [], "reason_ko": "[모의]"}],
+            "notes_ko": "[모의 응답]"}
     if "1案だけを作り直して" in prompt:
         return {"candidate": {"id": "C", "core_idea_ko": "[모의] 짧은 이야기형", "content_type": "短い物語・場面",
                               "viewer_action": "想像する", "ending_type": "どんでん返し", "approach_name_ko": "[모의] 미니 스토리",

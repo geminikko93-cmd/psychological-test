@@ -20,7 +20,7 @@ export function sceneMode(p, sc) {
 export async function renderSources(page) {
   const p = state.project;
   const scenes = p.script?.scenes || [];
-  page.append(h("div", { class: "page-head" }, h("h1", {}, "5. 영상소스"),
+  page.append(h("div", { class: "page-head" }, h("h1", {}, "6. 영상소스 · Google Flow"),
     h("div", { class: "muted" }, "장면마다 영상 제작 방식을 정합니다. Flow 장면은 클립 계획과 프롬프트를 만들고, 스톡·직접 파일·이미지 장면은 파일을 넣습니다. 'AI 추천 화면'과 실제로 확보한 파일은 따로 표시합니다.")));
   if (!scenes.length) { page.append(section(null, empty("대본이 없습니다."))); return; }
   const subStale = state.status?.steps?.subtitles?.state === "stale";

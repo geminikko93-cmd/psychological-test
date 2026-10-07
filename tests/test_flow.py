@@ -60,9 +60,10 @@ def test_flow_full_flow(client, configure_ai, tmp_path):
     assert j["status"] == "done" and len(j["result"]["clips"]) == len(plan["clips"]) and j["result"]["style"]["look_en"]
     one = wait_job(client, client.post(f"/api/projects/{pid}/ai/flow", json={"clip_ids": [plan["clips"][1]["id"]]}).json())
     assert [c["clip_id"] for c in one["result"]["clips"]] == [plan["clips"][1]["id"]]  # 지정한 클립만
-    for out in j["result"]["clips"]:
-        c = next(x for x in pr["flow"]["clips"] if x["id"] == out["clip_id"])
-        c.update(prompt_en=out["prompt_en"], prompt_ko=out["prompt_ko"], prompt_for_duration=c["duration"])
+    # 화면과 같은 경로로 적용(가변 부분만 바뀌고 최종 프롬프트는 프로그램이 조립)
+    applied = client.post("/api/flow/apply-ai", json={"project": pr, "result": j["result"]}).json()
+    pr["flow"]["clips"], pr["flow"]["style"] = applied["clips"], applied["style"]
+    assert all(c["prompt_en"] and c["prompt_source"] == "composed" for c in pr["flow"]["clips"])
     # 생성 영상(시험용 mp4)을 각 클립에 연결
     from app.util import ffmpeg_exe, run_tool
     for c in pr["flow"]["clips"]:

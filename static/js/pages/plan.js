@@ -2,6 +2,7 @@ import { state, changed } from "../state.js";
 import { h, section, field, bindInput, select, confirmBox, toast, empty, fmtTime, promptBox } from "../ui.js";
 import { runAi, aiReady, usageText } from "../aiflow.js";
 import { go, rerender } from "../nav.js";
+import { presets, vis } from "../vis.js";
 
 const KIND = [["undecided", "미정 (AI가 판단)"], ["entertainment", "창작 오락 콘텐츠"], ["factual", "사실 기반 콘텐츠(근거 필요)"]];
 
@@ -81,6 +82,8 @@ export async function renderPlan(page) {
     field("추가 메모", bindInput(idea, "notes", save, { multiline: true, rows: 2, placeholder: "참고할 점, 원하는 분위기 등" })),
     field("영상 제작 방식(기획·대본·소스 프롬프트에 반영)", select(MODES, (p.production || {}).source_mode || "mixed", (v) => { p.production = { ...(p.production || {}), source_mode: v }; save(); }),
       "장면마다 다르게 하려면 '혼합'을 고르고, 영상 단계에서 장면별로 정하세요.")));
+
+  await directionSection(page, p);
 
   // 후보
   const pc = p.plan_candidates || (p.plan_candidates = { items: [] });
@@ -180,4 +183,47 @@ export async function renderPlan(page) {
     const last = p.ai_log.filter((x) => x.task === "기획 제안").slice(-1)[0];
     if (last) page.append(h("div", { class: "muted small" }, "마지막 기획 요청 사용량: ", usageText(last)));
   }
+}
+
+
+// 채널 방향·화풍·구성 템플릿(이 프로젝트). 추천값은 사용자가 고를 때만 적용한다.
+async function directionSection(page, p) {
+  const P = await presets();
+  const v = vis(p);
+  const st = v.style;
+  const styleSel = select([["", "(아직 고르지 않음)"], ...Object.values(P.styles).map((s) => [s.id, s.label_ko + (s.recommended ? " — 기본 추천" : "")])],
+    st?.preset_id || "", (val) => {
+      if (!val) return;
+      const pr = P.styles[val];
+      v.style = { preset_id: pr.id, locked: false, version: 0, label_ko: pr.label_ko, desc_ko: pr.desc_ko, style_en: pr.style_en,
+        palette: pr.palette.map((c) => ({ ...c })), lighting_en: pr.lighting_en, material_en: pr.material_en, line_en: pr.line_en,
+        motion_en: pr.motion_en, motion_ko: pr.motion_ko, avoid_en: pr.avoid_en, accent: { name: "", hex: "", note_ko: "" } };
+      changed(true); rerender();
+    });
+  styleSel.disabled = !!st?.locked;
+  const tpl = v.structure;
+  const tplBox = h("div", {});
+  if (tpl?.use) {
+    tplBox.append(h("div", { class: "muted small" }, tpl.note_ko || ""),
+      h("table", { class: "tbl" }, h("tr", {}, h("th", {}, "시작(초)"), h("th", {}, "끝(초)"), h("th", {}, "역할"), h("th", {}, "내용")),
+        tpl.segments.map((sg) => h("tr", {},
+          h("td", {}, bindInput(sg, "start", () => changed(), { type: "number", class: "num" })),
+          h("td", {}, bindInput(sg, "end", () => changed(), { type: "number", class: "num" })),
+          h("td", {}, sg.role || ""),
+          h("td", {}, bindInput(sg, "label_ko", () => changed()))))),
+      h("div", { class: "row" }, "선택지 수 ", bindInput(tpl, "choices", () => changed(), { type: "number", class: "num" }),
+        h("span", { class: "muted small" }, "AI는 이 구성을 '추천'으로만 받고, 주제에 맞지 않으면 다른 형식을 고를 수 있습니다.")),
+      h("details", {}, h("summary", {}, "선택 화면 원칙"), (tpl.choice_rules_ko || []).map((x) => h("div", { class: "small" }, "· " + x))));
+  }
+  page.append(section("채널 방향 · 화풍 · 구성 (이 프로젝트)",
+    h("div", { class: "muted small" }, P.note_ko),
+    h("div", { class: "grid2" },
+      field("화풍 프리셋", styleSel, st?.locked ? "확정된 화풍은 5단계에서 [확정 풀기] 후 바꿀 수 있습니다." : "고른 뒤 5단계에서 확인·확정(잠금)합니다."),
+      field("쇼츠 구성 템플릿", select([["", "사용 안 함(AI가 주제에 맞게 판단)"], ...Object.values(P.structures).map((t) => [t.id, t.label_ko])], tpl?.use ? tpl.id : "", (val) => {
+        if (!val) { if (v.structure) v.structure.use = false; }
+        else if (v.structure?.id === val) v.structure.use = true;
+        else v.structure = { ...JSON.parse(JSON.stringify(P.structures[val])), use: true };
+        changed(true); rerender();
+      }), "시간과 선택지 수는 고칠 수 있습니다. 실제 길이는 일본어 음성·자막 시간으로 다시 맞춥니다.")),
+    tplBox));
 }

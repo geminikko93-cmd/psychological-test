@@ -20,7 +20,8 @@ function creditsText(p) {
 export async function renderExport(page) {
   const p = state.project;
   const pub = p.publish;
-  page.append(h("div", { class: "page-head" }, h("h1", {}, "6. 게시 정보 · 내보내기"),
+  try { CHANNEL_NOTICE = ((await api.get("/api/channel")).profile?.description_notice_ja || "").trim(); } catch { CHANNEL_NOTICE = ""; }
+  page.append(h("div", { class: "page-head" }, h("h1", {}, "8. 게시 정보 · 내보내기"),
     h("div", { class: "muted" }, "CapCut에서 바로 쓸 수 있도록 최종 음성·SRT·소스·장면표·대본·게시 정보를 한 폴더(및 ZIP)로 묶습니다. API 키와 개인 설정은 포함하지 않습니다.")));
 
   const draftBox = h("div", {});
@@ -48,10 +49,11 @@ export async function renderExport(page) {
     draftBox,
     field("게시 제목(일본어)", bindInput(pub, "title", () => changed(), { class: "full jp" })),
     field("설명문(일본어)", bindInput(pub, "description", () => changed(), { multiline: true, rows: 5, class: "full jp" }), "크레딧은 아래 실제 기록에서 자동으로 덧붙습니다. 오락 콘텐츠라면 오락용임을 밝혀 두세요."),
+    noticeBox(p, pub),
     field("해시태그", bindInput(pub, "hashtags", () => changed())),
     field("추가 크레딧(BGM 등 직접 기록)", bindInput(pub, "credits_extra", () => changed(), { multiline: true, rows: 2 })),
     h("div", { class: "note" }, h("b", {}, "자동 크레딧(타입캐스트·확보한 소스 기록 기준): "), cred ? h("div", { class: "pre" }, cred) : "기록 없음"),
-    h("button", { class: "small", onclick: () => copyText((pub.description || "") + (cred ? "\n\n" + cred : ""), "설명문+크레딧") }, "설명문+크레딧 복사")));
+    h("button", { class: "small", onclick: () => copyText(descWithNotice(p, pub) + (cred ? "\n\n" + cred : ""), "설명문+고지+크레딧") }, "설명문+고지+크레딧 복사")));
 
   const preBox = h("div", {});
   const resBox = h("div", {});
@@ -108,4 +110,25 @@ function showResult(box, r) {
         const d = r.files.find((x) => x.file === f.file);
         return h("tr", {}, h("td", {}, f.file), h("td", {}, d?.desc || ""), h("td", {}, f.ok ? "✔" : `✖ ${f.note}`));
       })));
+}
+
+
+const DEFAULT_NOTICE = "※この動画の心理テストは、娯楽として楽しむ内容です。";
+let CHANNEL_NOTICE = "";
+function noticeOf(p, pub) {
+  if (pub.entertainment_notice === false || p.idea?.content_kind === "factual") return "";
+  return (pub.notice_ja || "").trim() || CHANNEL_NOTICE || DEFAULT_NOTICE;
+}
+// 서버(app/export_flow.py description_with_notice)와 같은 규칙: 설명문에 고지가 없으면 끝에 덧붙임
+function descWithNotice(p, pub) {
+  const d = (pub.description || "").trimEnd();
+  const n = noticeOf(p, pub);
+  return n && !d.includes(n) ? (d + "\n\n" + n).trim() : d;
+}
+function noticeBox(p, pub) {
+  return h("div", { class: "note small" },
+    h("label", { class: "chk" }, h("input", { type: "checkbox", checked: pub.entertainment_notice !== false && p.idea?.content_kind !== "factual",
+      disabled: p.idea?.content_kind === "factual", onchange: (e) => { pub.entertainment_notice = e.target.checked; changed(); } }),
+      " 오락 콘텐츠 고지를 설명문 끝에 자동으로 덧붙임(이미 있으면 생략)"),
+    field("고지 문구(비우면 채널 설정의 고지 → 기본 문구)", bindInput(pub, "notice_ja", () => changed(), { class: "full jp", placeholder: DEFAULT_NOTICE })));
 }

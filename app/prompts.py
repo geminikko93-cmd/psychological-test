@@ -34,6 +34,10 @@ SYSTEM = """あなたは日本語ショート動画(YouTube Shorts / Instagram R
 12. 動物や物を選んだというだけで、その人の実際の性格・習慣を断定しない。選ぶ状況と結果が自然につながるようにする。
 13. 結果を見せるまでに不要な待ち時間を作らない。締めの行動提案は意味がある時だけ入れる。
 14. 企画・台本段階の秒数は推定であり、最終の長さは実際の Typecast 音声で決まる。
+15. 結果は創作の娯楽としての解釈や生活の共感として書く。物を一つ選んだことを理由に、実際の性格・精神状態・健康を判定しない。
+   「本性を正確に見抜く」「絶対当たる」などの文言や、根拠のない心理学の説明を書かない。
+16. 質問・選択肢(A/B/Cなど)・結果の文字は編集で字幕として入れる。映像の中に文字を描かせる前提にしない。
+   音なしで見ても質問・選択・結果が分かる構成にする。
 
 出力は指定された JSON オブジェクトのみ。前置き・後書き・コードフェンスは付けない。"""
 
@@ -325,14 +329,29 @@ def publish_prompt(idea: dict, plan: dict, script_view: dict, platforms: list[st
 
 
 def flow_prompt(idea: dict, plan: dict, scenes: list[dict], clips: list[dict], style: dict | None,
-                instruction: str, only_ids: list[str] | None) -> str:
+                instruction: str, only_ids: list[str] | None, fixed: dict | None = None) -> str:
+    """AI는 클립별 '가변 부분'만 쓴다. 화풍·등장 요소의 고정 묘사는 프로그램이 저장된 원문을 직접 끼워 넣는다."""
     target = f"\n\n## 今回プロンプトを書くクリップ\n{_json(only_ids)}\n(これ以外のクリップは文脈として参照のみ。出力しない)" if only_ids else ""
     ins = f"\n\n## 制作者の追加指示(韓国語)\n{instruction}" if instruction.strip() else ""
-    keep_style = "既存のスタイルガイドを維持し、style_bible は同じ内容で返す。" if style and style.get("look_en") else "最初にスタイルガイドを決める。"
+    fixed = fixed or {}
+    has_fixed_style = bool(fixed.get("style_locked_text"))
     from .flow import ALLOWED, ASPECT, MODEL_LABEL
     durs = "/".join(str(d) for d in ALLOWED)
+    style_rule = ("- 画風は制作者が確定済み(下の固定スタイル)。style_bible は出力しない(出力しても無視される)。"
+                  if has_fixed_style else
+                  "- 画風が未確定のため、style_bible に全クリップ共通のスタイル案を書く(既存スタイルガイドがあれば維持)。")
     return f"""Google Flow の動画生成モデル {MODEL_LABEL} に入力するプロンプトを作ってください。
 制作者は各クリップを Flow で生成し、CapCut でナレーション(Typecast音声)と字幕を重ねて編集します。
+
+## 重要: 固定部分と可変部分の分離
+最終プロンプトはプログラムが次の順で組み立てます:
+  [登場要素の固定描写(保存済み原文)] + [場所・共通スタイル(保存済み原文)] + [あなたが書く可変部分 var_en] + [共通の制約]
+- あなたが書くのは var_en(そのクリップの行動・構図・カメラの動き・時間配分)だけ。
+- 登場要素(人物・キャラクター・物・場所)の外見・色・服装・形・素材を var_en に書き直さない。名前(name)で呼ぶだけにする。
+- 「same person」「same as previous scene」のような表現で外見を代用しない(外見はプログラムが毎回挿入する)。
+- そのクリップに実際に映る要素の id だけを element_ids に入れる。全要素を全クリップに入れない。
+{style_rule}
+- 意図的に服装・場所・照明を変える場合は var_en に書かず intended_change_en / intended_change_ko に書く。
 
 ## アイデア
 {_json(idea)}
@@ -343,31 +362,83 @@ def flow_prompt(idea: dict, plan: dict, scenes: list[dict], clips: list[dict], s
 ## 台本(シーンごと、表示用日本語と韓国語の意味)
 {_json(scenes)}
 
+## 登場要素(制作者が定義。固定描写は参照のみ・書き換え禁止)
+{_json(fixed.get("elements") or [])}
+
+## 固定スタイル(参照のみ)
+{fixed.get("style_locked_text") or "(未確定)"}
+
+## 構成テンプレート(推奨、変更可)
+{_json(fixed.get("structure") or {})}
+
 ## クリップ計画(各クリップは最終音声のこの区間に置く。duration は Flow で選ぶ長さ: {durs}秒)
 {_json(clips)}
 
-## 既存スタイルガイド
+## 既存スタイルガイド(画風未確定時のみ)
 {_json(style or {})}{target}{ins}
 
-## 書き方のルール
-- {keep_style} 全クリップで人物・場所・色調・画風・カメラの言語を統一し、各プロンプトにスタイルの要点を毎回含める(Flowは各生成が独立しているため)。
-- prompt_en は英語。構成: 被写体 → 動作 → 場所 → カメラ(画角・動き) → 光・色 → スタイル → 時間配分。
-  例: "0-2s: ..., 2-5s: ..." のように、そのクリップが覆うナレーションのタイミングに合わせて展開を書く(duration 秒に収める)。
-- 縦長 {ASPECT} の構図を前提にする(主題を画面中央〜上2/3に。下部は字幕と UI で隠れる)。
-- 画面内に文字・字幕・ロゴ・透かしを入れない(字幕は CapCut で入れる)。"no on-screen text, no captions, no logos" を含める。
-- ナレーションは別に入れるので、話す人物・口の動き・セリフは入れない。音は環境音のみ("no dialogue, no speech, ambient sound only")。
-- 実在の人物・有名人・商標・特定ブランドを描写しない。子どもを主役にしない。
-- 写実的な人物を使う場合はリスクとして韓国語で知らせる(プラットフォームのAI表示義務の可能性)。
-- 台本の内容と合わない映像、誇張した演出、根拠のない事実描写をしない。
-- mode: "text"(テキストのみ) / "first_frame"(前のクリップの最後のフレーム画像を最初のフレームに使うと連続性が上がる場合) / "ingredients"(同じ人物・物を複数クリップで使う場合に参照画像を使う)。理由を mode_note_ko に。
-- prompt_ko は prompt_en の自然な韓国語訳、beats_ko は秒単位の展開を韓国語で。
+## var_en の書き方
+- 英語。構成: 動作 → 構図(画角) → カメラの動き → 時間配分。例: "0-2s: ..., 2-5s: ..."(duration 秒に収める)。
+- 縦長 {ASPECT} の構図(主題を画面中央〜上2/3に。下部は字幕と UI で隠れる)。
+- 画面内に文字・字幕・ロゴ・看板の文字を描かせない。日本語・韓国語の文字を var_en に入れない。質問・選択肢(A/B/C)・結果の文字は CapCut で字幕として入れる。
+- 話す人物・口の動き・セリフは入れない(ナレーションは別)。
+- 選択肢の画面(role=choice)では: 選択中に物の形・位置・数を変えない、選択肢を同じくらいの大きさと見やすさで見せる、特定の選択肢だけを強調する動きや照明をしない。必要なら静止画を推奨(gen_mode=still)。
+- 動きは雰囲気のため(カーテンの小さな揺れ、窓の外の雨、弱い光の変化、ゆっくりしたカメラ移動)。
+- 質問・選択・結果ごとに必ず新しい動画を作らない。確定画像の静止表示(still)や他クリップの素材の再利用(reuse)を積極的に提案してよい。
+- 実在の人物・有名人・商標・特定ブランド・特定の作家や既存キャラクターの画風を描写しない。子どもを主役にしない。
+- 写実的な人物を使う場合はリスクとして韓国語で知らせる。
+- gen_mode: "text" / "ingredients"(登場要素の基準画像を参照) / "first_frame"(開始画面の画像から続ける) / "first_last" / "still"(確定画像を静止表示、Flow生成なし) / "reuse"(他クリップの素材を再利用、Flow生成なし)。
+  continues_previous: 直前クリップの動作を連続させる場合だけ true(その時は実際の使用区間の終わりのフレームを開始フレームにする)。それ以外は false(元の基準画像から新しく始める)。
+- var_ko は var_en の自然な韓国語訳、beats_ko は秒単位の展開を韓国語で。
 
 ## 出力 JSON 形式
 {{
- "style_bible": {{"look_en": "全クリップ共通のスタイル記述(英語、1〜3文)", "look_ko": "한국어 설명",
-   "recurring_ko": ["반복 등장 요소(인물·물건·장소)"], "palette_ko": "색감", "avoid_en": "避ける要素(英語)"}},
+ "style_bible": {{"look_en": "", "look_ko": "", "recurring_ko": [], "palette_ko": "", "avoid_en": ""}},
  "clips": [
-  {{"clip_id": "既存のclip id", "prompt_en": "", "prompt_ko": "", "beats_ko": "0~2초: ... / 2~6초: ...",
-    "mode": "text | first_frame | ingredients", "mode_note_ko": "", "risk_ko": ""}}
+  {{"clip_id": "既存のclip id", "element_ids": ["実際に映る要素のid"], "role": "intro | choice | think | result | ending | other",
+    "var_en": "0-3s: ...", "var_ko": "", "beats_ko": "0~3초: ... / 3~6초: ...",
+    "gen_mode": "text | ingredients | first_frame | first_last | still | reuse", "continues_previous": false,
+    "intended_change_en": "", "intended_change_ko": "", "mode_note_ko": "", "risk_ko": ""}}
  ]
+}}"""
+
+
+def elements_prompt(idea: dict, plan: dict, script_view: dict, existing: list[dict], style_text: str, instruction: str) -> str:
+    ins = f"\n\n## 制作者の追加指示(韓国語)\n{instruction}" if instruction.strip() else ""
+    return f"""台本から、複数のクリップに繰り返し登場する要素(人物・キャラクター・物・場所)を抽出し、外見を固定するための下書きを作ってください。
+これは下書きで、制作者が修正・確定します。
+
+## アイデア
+{_json(idea)}
+
+## 企画
+{_json(plan)}
+
+## 台本
+{_json(script_view)}
+
+## 既に定義済みの要素(確定済みのものは変更提案しない。同じ物を重複して作らない)
+{_json(existing)}
+
+## プロジェクトの画風(参照)
+{style_text or "(未確定)"}{ins}
+
+## ルール
+- 2つ以上の場面に出る、または選択肢・結果で同じ見た目を保つ必要がある要素だけ。
+- type: person(人物) / character(キャラクター) / object(物) / place(場所)。チャンネルは物・空間中心なので人物は必要な場合だけ。
+- fixed_en: 外見を固定する英語の描写(1〜3文)。形・色・素材・部品・配置など具体的に。曖昧な語(nice, beautiful)は避ける。
+- features: type ごとの英語の短い記述。
+  person: face, hair, body, accessories, outfit / character: silhouette, proportions, face, pattern, colors /
+  object: shape, color, material, parts, unique / place: layout, furniture, openings
+- must_keep_en: 変えてはいけない特徴(英語、短い語句の配列)。
+- 実在の人物・ブランド・既存キャラクター・特定作家の画風を使わない。
+- desc_ko と reason_ko は韓国語。
+
+## 出力 JSON 形式
+{{
+ "elements": [
+  {{"name": "Window", "type": "object", "desc_ko": "", "fixed_en": "", "features": {{}}, "must_keep_en": [],
+    "appears_in_scene_ids": ["既存 scene id"], "reason_ko": ""}}
+ ],
+ "notes_ko": ""
 }}"""

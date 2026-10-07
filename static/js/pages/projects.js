@@ -3,7 +3,7 @@ import { openProject } from "../state.js";
 import { h, section, toast, showError, promptBox, confirmBox, modal, fmtTime, badge, empty } from "../ui.js";
 import { go, rerender } from "../nav.js";
 
-const STEP_NAMES = { plan: "기획", script: "대본", audio: "음성", subtitles: "자막", sources: "소스", export: "내보내기" };
+const STEP_NAMES = { plan: "기획", script: "대본", audio: "음성", subtitles: "자막", visual: "화풍", sources: "소스", review: "검수", export: "내보내기" };
 
 export async function renderProjects(page) {
   const { projects } = await api.get("/api/projects");
@@ -33,6 +33,9 @@ export async function renderProjects(page) {
         h("button", { onclick: async () => {
           try { const r = await api.post("/api/examples/import", {}); toast("예제 프로젝트를 만들었습니다.", "ok"); go("plan", r.project.id); } catch (e) { showError(e); }
         } }, "예제 프로젝트 열기"),
+      h("button", { title: "화풍·반복 등장 요소·소재 재사용까지 들어 있는 일관성 관리 예제(음성 없음)", onclick: async () => {
+          try { const r = await api.post("/api/examples/small-room", {}); toast("'작은 방' 예제를 만들었습니다.", "ok"); go("visual", r.project.id); } catch (e) { showError(e); }
+        } }, "예제: 작은 방(일관성 관리)"),
         fileInput)),
   );
 

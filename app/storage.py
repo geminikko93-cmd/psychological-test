@@ -254,6 +254,8 @@ def duplicate_project(pid: str, mode: str = "all") -> dict:
         for k in ("audio", "subtitles", "sources", "typecast"):
             copy[k] = blank[k]
     new = create_project(copy["name"], copy)
+    if mode == "plan" and (project_dir(pid) / "media" / "visual").exists():  # 화풍·등장 요소의 기준 이미지는 함께
+        shutil.copytree(project_dir(pid) / "media" / "visual", project_dir(new["id"]) / "media" / "visual", dirs_exist_ok=True)
     if mode == "all":
         sdir, ddir = project_dir(pid) / "media", project_dir(new["id"]) / "media"
         shutil.copytree(sdir, ddir, dirs_exist_ok=True)
@@ -294,8 +296,8 @@ def display_hash(project: dict) -> str:
     return stable_hash([[ln.get("id"), ln.get("display", ""), ln.get("tts", "")] for ln in all_lines(project)])
 
 
-STEP_LABELS = {"plan": "기획", "script": "대본", "audio": "음성", "subtitles": "자막",
-               "sources": "영상소스", "export": "내보내기"}
+STEP_LABELS = {"plan": "기획", "script": "대본", "audio": "음성", "subtitles": "자막", "visual": "화풍·등장요소",
+               "sources": "영상소스", "review": "검수", "export": "내보내기"}
 
 # ---------------------------------------------------------------- 단계별 기반 버전(무엇이 바뀌면 어떤 단계가 최신이 아닌지)
 #  기획 내용        → 대본(based_on_plan_hash)
@@ -306,6 +308,9 @@ STEP_LABELS = {"plan": "기획", "script": "대본", "audio": "음성", "subtitl
 #  위 모든 결과물   → 내보내기(last_export.basis)
 
 PLAN_META_KEYS = ("updated_at", "source", "selected_at")
+# 내보내기 결과물(배치표·일관성 자료)에 들어가는 클립 필드
+VISUAL_CLIP_KEYS = ("element_ids", "gen_mode", "ref_asset_ids", "start_frame", "end_frame", "use_start", "edit", "reuse_of",
+                    "still_asset_id", "review", "changes", "role")
 
 
 def plan_hash(project: dict) -> str | None:
@@ -338,7 +343,9 @@ def export_basis(p: dict) -> str:
         "sources": [[i.get("id"), i.get("file"), i.get("scene_id"), i.get("credit_text")] for i in (p.get("sources") or {}).get("items", [])
                     if i.get("status") == "acquired"],
         "clips": [[c.get("id"), c.get("item_id"), c.get("start"), c.get("end"), c.get("duration"), c.get("prompt_en")]
+                  + ([c.get(k) for k in VISUAL_CLIP_KEYS] if any(c.get(k) for k in VISUAL_CLIP_KEYS) else [])
                   for c in (p.get("flow") or {}).get("clips") or []],
+        **({"visual": p["visual"]} if p.get("visual") else {}),
         "publish": [pub.get("title"), pub.get("description"), pub.get("hashtags"), pub.get("credits_extra")],
         "typecast": (p.get("typecast") or {}).get("credit_text"),
     })
@@ -410,6 +417,10 @@ def compute_status(p: dict) -> dict:
     clip_scenes = {c.get("scene_id") for c in clips}
 
     from .flow import scene_mode
+    from .visual import resolve_media
+
+    def _has_media(c):  # 업로드한 영상, 확정 이미지(정지 화면), 다른 클립 소재 재사용 모두 인정
+        return resolve_media(p, c) is not None
 
     def scene_ok(sc):
         mode = scene_mode(p, sc)
@@ -417,7 +428,7 @@ def compute_status(p: dict) -> dict:
             return True
         if mode == "flow":
             mine = [c for c in clips if c.get("scene_id") == sc.get("id")]
-            return bool(mine) and all(c.get("item_id") in acquired_items for c in mine)
+            return bool(mine) and all(_has_media(c) for c in mine)
         return sc.get("id") in acquired
 
     missing = [i + 1 for i, sc in enumerate(scenes) if not scene_ok(sc)]
@@ -427,7 +438,7 @@ def compute_status(p: dict) -> dict:
     src_notes = [f"영상을 확보하지 않은 장면: {', '.join(map(str, missing))}"] if missing else []
     if clips:
         no_prompt = sum(1 for c in clips if not c.get("prompt_en"))
-        no_file = sum(1 for c in clips if c.get("item_id") not in acquired_items)
+        no_file = sum(1 for c in clips if not _has_media(c))
         if no_prompt:
             src_notes.append(f"Flow 프롬프트가 없는 클립 {no_prompt}개")
         if no_file:
@@ -437,6 +448,8 @@ def compute_status(p: dict) -> dict:
     if sub_state == "stale" and scenes:
         src_notes.append("자막이 최신이 아니라 장면 시간도 다시 계산해야 합니다.")
     steps["sources"] = {"state": src_state, "notes": src_notes}
+
+    steps["visual"], steps["review"] = _visual_steps(p, clips)
 
     pub = p.get("publish") or {}
     pub_ok = bool(pub.get("title")) and bool(pub.get("description"))
@@ -457,13 +470,61 @@ def compute_status(p: dict) -> dict:
 
     order = [("plan", "기획 방향을 정하세요"), ("script", "대본을 완성하세요"),
              ("audio", "음성을 넣고 무음 정리를 하세요"), ("subtitles", "자막 시간을 맞추세요"),
-             ("sources", "장면별 영상소스를 확보하세요"), ("export", "게시 정보 작성 후 내보내세요")]
+             ("visual", "화풍을 확정하고 반복 등장 요소를 정하세요"),
+             ("sources", "장면별 영상소스를 확보하세요"), ("review", "영상을 기준 이미지와 비교해 검수하세요"),
+             ("export", "게시 정보 작성 후 내보내세요")]
     nxt = "모든 단계가 완료되었습니다. CapCut에서 편집을 시작하세요."
     for key, label in order:
         st = steps[key]["state"]
-        if st != "done":
+        if st not in ("done", "optional"):
             nxt = (steps[key]["notes"][0] if st == "stale" and steps[key]["notes"] else label)
             nxt = f"[{STEP_LABELS[key]}] {nxt}"
             break
     return {"steps": steps, "next": nxt, "tts_hash": tts_hash(p), "display_hash": display_hash(p),
             "plan_hash": plan_hash(p), "audio_mismatch": mm["mismatch"], "audio_mismatch_ack": mm["acknowledged"]}
+
+
+def _visual_steps(p: dict, clips: list[dict]) -> tuple[dict, dict]:
+    """화풍·등장 요소 단계와 검수 단계. Flow를 쓰지 않는 프로젝트(예전 프로젝트 포함)는 '선택'으로 두어 막지 않는다."""
+    from . import visual as V
+
+    vis = p.get("visual") or {}
+    uses = bool(vis.get("elements")) or bool(vis.get("style")) or any(c.get("review") for c in clips)
+    if not uses:  # 예전 프로젝트·Flow 미사용: 막지 않고 안내만
+        note = ("화풍을 확정하고 반복 등장 요소를 정하면 클립 사이 일관성을 관리하기 쉬워집니다(선택)." if clips
+                else "Flow 클립을 쓰지 않으면 건너뛰어도 됩니다.")
+        opt = {"state": "optional", "notes": [note]}
+        return opt, dict(opt)
+    notes = []
+    st = vis.get("style") or {}
+    if not st.get("locked"):
+        notes.append("프로젝트 화풍을 확정(잠금)하세요." if st.get("style_en") else "화풍 프리셋을 고르고 확정하세요.")
+    em = V.element_map(p)
+    used = {e for c in clips for e in c.get("element_ids") or []}
+    unconfirmed = [em[e].get("name") for e in used if e in em and not em[e].get("locked")]
+    if unconfirmed:
+        notes.append("클립에 연결된 미확정 등장 요소: " + ", ".join(unconfirmed))
+    missing = [e for e in used if e not in em]
+    no_ref = [em[e].get("name") for e in used if e in em and not em[e].get("primary_ref_id")]
+    if no_ref:
+        notes.append("기준 이미지가 확정되지 않은 요소(텍스트 묘사만 사용): " + ", ".join(no_ref))
+    v_state = "stale" if missing else ("todo" if not st.get("locked") or unconfirmed else "done")
+    if missing:
+        notes.insert(0, f"삭제된 등장 요소를 가리키는 클립 연결이 {len(missing)}개 있습니다.")
+    r_notes, r_state = [], "done"
+    if not clips:
+        return {"state": v_state, "notes": notes}, {"state": "optional", "notes": ["클립 계획 후 검수합니다."]}
+    states = [V.review_state(p, c) for c in clips]
+    n = lambda k: sum(1 for x in states if x["state"] == k)  # noqa: E731
+    if n("recheck"):
+        r_state = "stale"
+        r_notes.append(f"재검토가 필요한 클립 {n('recheck')}개(기준 자료·영상·사용 구간 등이 바뀜)")
+    if n("todo") or n("fix") or n("no_media"):
+        r_state = "todo" if r_state == "done" else r_state
+        if n("todo"):
+            r_notes.append(f"검수 전 클립 {n('todo')}개")
+        if n("fix"):
+            r_notes.append(f"'수정 필요' 표시 클립 {n('fix')}개")
+        if n("no_media"):
+            r_notes.append(f"영상 미등록 클립 {n('no_media')}개")
+    return {"state": v_state, "notes": notes}, {"state": r_state, "notes": r_notes}

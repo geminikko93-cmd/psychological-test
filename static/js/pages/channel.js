@@ -2,6 +2,7 @@
 import { api } from "../api.js";
 import { h, clear, section, field, bindInput, select, confirmBox, toast, empty, showError, fmtTime } from "../ui.js";
 import { go, rerender } from "../nav.js";
+import { presets } from "../vis.js";
 
 let filter = "unused";
 
@@ -41,6 +42,8 @@ export async function renderChannel(page) {
       f("설명란 고지 문구(일본어)", "description_notice_ja", { class: "full jp" }),
       f("기본 목표 길이(초)", "target_seconds", { type: "number" })),
     h("div", { class: "row" }, saveState)));
+
+  await recommendSection(page, data, prof, save, () => clearTimeout(timer));
 
   // 주제 목록
   const listBox = h("div", {});
@@ -98,4 +101,59 @@ export async function renderChannel(page) {
           try { clearTimeout(timer); await api.put("/api/channel", { channel: data }); const r = await api.post("/api/channel/reseed"); toast(r.added ? `보고서 주제 ${r.added}개를 다시 넣었습니다.` : "빠진 보고서 주제가 없습니다.", "ok"); rerender(); } catch (e) { showError(e); }
         } }, "보고서 기본 주제 중 지운 것 다시 불러오기")))));
   renderList();
+}
+
+
+const FIELD_LABELS = { genre: "장르·위치", audience: "시청자와 상황", value: "채널의 가치", format: "영상 형식", tone: "말투·문장 규칙",
+  visual_style: "영상 스타일", target_seconds: "기본 목표 길이(초)", length_range: "길이 범위", description_notice_ja: "설명란 고지 문구" };
+
+// 실험용 추천 설정: 기존 값을 자동으로 바꾸지 않고, 사용자가 체크한 항목만 적용(적용 전 백업)
+async function recommendSection(page, data, prof, save, stopTimer) {
+  const P = await presets();
+  const cp = P.channel;
+  const pick = {};
+  const rows = Object.entries(cp.fields).map(([k, val]) => {
+    const same = String(prof[k] ?? "") === String(val);
+    pick[k] = false;
+    return h("tr", { class: same ? "same" : "" },
+      h("td", {}, same ? h("span", { class: "badge ok" }, "같음") : h("input", { type: "checkbox", onchange: (e) => (pick[k] = e.target.checked) })),
+      h("td", { class: "nowrap" }, FIELD_LABELS[k] || k),
+      h("td", { class: "small" }, String(prof[k] ?? "") || h("span", { class: "muted" }, "(비어 있음)")),
+      h("td", { class: "small" }, String(val)));
+  });
+  const addRules = { on: false };
+  page.append(section("추천 설정 (실험용 초기값 — 고른 항목만 적용)",
+    h("div", { class: "note" }, h("b", {}, cp.label_ko), h("div", { class: "small" }, cp.note_ko),
+      h("div", { class: "small" }, "지금 저장된 채널 설정(예: 시청층 10~40대)은 그대로 유지됩니다. 왼쪽 칸을 체크한 항목만 바뀌고, 바꾸기 전 설정은 channel_backup_*.json으로 보관됩니다.")),
+    h("table", { class: "tbl" }, h("tr", {}, h("th", {}, "적용"), h("th", {}, "항목"), h("th", {}, "지금 값"), h("th", {}, "추천 값")), rows),
+    h("label", { class: "chk" }, h("input", { type: "checkbox", onchange: (e) => (addRules.on = e.target.checked) }),
+      " 추천 원칙도 '지켜야 할 원칙'에 추가(이미 있는 문장은 건너뜀): ", h("span", { class: "muted small" }, cp.rules_add.join(" / "))),
+    h("div", { class: "row" },
+      h("button", { class: "primary", onclick: async () => {
+        const keys = Object.keys(pick).filter((k) => pick[k]);
+        if (!keys.length && !addRules.on) { toast("적용할 항목을 체크하세요.", "info"); return; }
+        if (!(await confirmBox("추천 설정 적용", `체크한 ${keys.length}개 항목${addRules.on ? "과 추천 원칙" : ""}을 채널 설정에 적용합니다.
+기존 프로젝트는 바뀌지 않습니다(새 프로젝트부터 반영).`, "적용"))) return;
+        try { stopTimer(); await api.put("/api/channel", { channel: data }); const r = await api.post("/api/channel/apply-preset", { keys, rules: addRules.on }); toast(`${r.applied.length}개 항목 적용, 원칙 ${r.rules_added}개 추가`, "ok"); rerender(); } catch (e) { showError(e); }
+      } }, "체크한 항목 적용")),
+    h("h4", {}, "새 프로젝트의 기본 화풍"),
+    h("div", { class: "row" },
+      select([["", "(지정 안 함)"], ...Object.values(P.styles).map((x) => [x.id, x.label_ko + (x.recommended ? " — 기본 추천" : "")])], prof.default_style_preset || "",
+        (val) => { if (val) prof.default_style_preset = val; else delete prof.default_style_preset; save(true); }),
+      h("span", { class: "muted small" }, "새로 만드는 프로젝트에만 '확정 전 초안'으로 들어갑니다. 기존 프로젝트의 화풍은 바꾸지 않습니다.")),
+    h("h4", {}, "추천 기획 후보 5개"),
+    h("div", { class: "small" }, P.ideas.map((x) => h("div", {}, `· ${x.title_ja} (${x.title_ko}) — ${x.angle_ko}`))),
+    h("div", { class: "row" }, h("button", { onclick: async () => {
+      try { stopTimer(); await api.put("/api/channel", { channel: data }); const r = await api.post("/api/channel/add-ideas"); toast(r.added ? `주제 목록에 ${r.added}개 추가했습니다.` : "이미 모두 목록에 있습니다(고친 내용은 그대로).", "ok"); rerender(); } catch (e) { showError(e); }
+    } }, "주제 목록에 추가(이미 있으면 건너뜀)"),
+      h("span", { class: "muted small" }, "질문 의도·선택 방식·결과의 관점이 서로 다른 후보입니다. 주제 목록에서 자유롭게 고치세요.")),
+    h("details", {}, h("summary", {}, "초기 운영 예시: 그림책풍 3편 + 미니어처풍 3편 시험"),
+      h("div", { class: "small pre" }, [
+        "목적: 작은 표본으로 방향을 확인하는 것입니다. 흥행 검증이 아니며, 6편의 반응 차이는 우연일 수 있습니다.",
+        "1) 비슷한 길이(30~40초)·비슷한 주제 난이도의 기획 6개를 고릅니다(예: 작은 방·카페 자리·휴일).",
+        "2) 3편은 '따뜻한 그림책풍', 3편은 '수공예 미니어처풍'으로 프로젝트마다 화풍을 확정합니다. 다른 조건(구성 템플릿·말투·길이)은 가능한 한 같게 둡니다.",
+        "3) 비슷한 요일·시간대에 번갈아 올립니다(그림책 → 미니어처 → 그림책 …).",
+        "4) 각 플랫폼 기본 분석 화면에서 시청 지속률·끝까지 본 비율·댓글을 직접 메모합니다(이 프로그램은 채널 분석 API에 연결하지 않음).",
+        "5) 차이가 크지 않으면 결론을 내리지 말고 다음 6편에서 다시 확인합니다. 제작 시간·일관성 유지 난이도도 함께 메모하세요.",
+      ].join("\n")))));
 }

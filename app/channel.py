@@ -116,11 +116,76 @@ def add_topics(lines: list[str]) -> dict:
     return {"added": added, "channel": data}
 
 
+def _backup(tag: str) -> None:
+    f = _file()
+    if f.exists():
+        atomic_write_text(f.with_name(f"channel_backup_{now_iso()[:19].replace(':', '').replace('-', '')}_{tag}.json"),
+                          f.read_text(encoding="utf-8"))
+
+
+def apply_preset(keys: list[str], add_rules: bool = False) -> dict:
+    """사용자가 고른 추천 항목만 채널 설정에 적용(자동 적용 없음). 적용 전 channel_backup_*.json 보관."""
+    from .presets import CHANNEL_PRESET
+
+    fields = CHANNEL_PRESET["fields"]
+    keys = [k for k in keys if k in fields]
+    if not keys and not add_rules:
+        raise UserError("적용할 항목을 고르세요.")
+    data = load()
+    _backup("before-preset")
+    prof = data.setdefault("profile", {})
+    for k in keys:
+        prof[k] = fields[k]
+    added = 0
+    if add_rules:
+        rules = prof.setdefault("rules", [])
+        for r in CHANNEL_PRESET["rules_add"]:
+            if r not in rules:
+                rules.append(r)
+                added += 1
+    data.setdefault("applied_presets", []).append({"id": CHANNEL_PRESET["id"], "keys": keys, "rules_added": added,
+                                                   "at": now_iso()})
+    save(data)
+    return {"applied": keys, "rules_added": added, "channel": data}
+
+
+def add_ideas() -> dict:
+    """추천 기획 후보를 주제 목록에 '추가'만 한다(이미 있으면 그대로 — 사용자가 고친 내용 보존)."""
+    from .presets import PLAN_IDEAS
+
+    data = load()
+    have = {t.get("id") for t in data["topics"]}
+    n = max([t.get("no") or 0 for t in data["topics"]] + [0])
+    added = 0
+    for idea in PLAN_IDEAS:
+        if idea["id"] in have:
+            continue
+        n += 1
+        data["topics"].append({"id": idea["id"], "no": n, "title_ja": idea["title_ja"], "title_ko": idea["title_ko"],
+                               "angle_ko": idea["angle_ko"], "first_line_ja": idea["first_line_ja"],
+                               "example_choices": idea["example_choices"], "caution_ko": idea["caution_ko"],
+                               "series_ko": idea["series_ko"], "style_hint": idea.get("style_hint", ""),
+                               "source": "추천 기획 후보(실험용)", "status": "unused", "project_ids": [], "memo": ""})
+        added += 1
+    save(data)
+    return {"added": added, "channel": data}
+
+
+def visual_defaults(project: dict, topic: dict | None = None) -> None:
+    """새 프로젝트에만: 채널에서 고른 기본 화풍(또는 주제의 추천 화풍)을 '확정 전 초안'으로 넣는다."""
+    from . import visual
+
+    prof = load().get("profile") or {}
+    pid = prof.get("default_style_preset") or (topic or {}).get("style_hint")  # 사용자가 고른 채널 기본값이 우선
+    if pid and not (project.get("visual") or {}).get("style"):
+        project.setdefault("visual", {})["style"] = visual.new_style_from_preset(pid)
+
+
 def profile_block() -> dict:
     """AI 요청에 붙일 채널 설정(빈 값 제외)."""
     p = load().get("profile") or {}
     keys = ("channel_name", "genre", "audience", "value", "format", "tone", "visual_style", "rules",
-            "description_notice_ja", "upload_plan", "target_seconds")
+            "description_notice_ja", "upload_plan", "target_seconds", "length_range")
     return {k: p[k] for k in keys if p.get(k)}
 
 
@@ -155,6 +220,7 @@ def start_project(topic_id: str) -> dict:
         raise UserError("주제를 찾을 수 없습니다.", status=404)
     base = storage.empty_project(f"{topic.get('no', '')}. {topic.get('title_ko') or topic.get('title_ja')}")
     base["idea"] = idea_from_profile(topic)
+    visual_defaults(base, topic)
     p = storage.create_project(base["name"], base)
     topic["status"] = "used"
     topic.setdefault("project_ids", []).append(p["id"])

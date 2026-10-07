@@ -229,7 +229,13 @@ async function previewChanges(r) {
       for (const sc of s.scenes) { const k = sc.lines.findIndex((l) => l.id === ch.line_id); if (k >= 0) sc.lines[k] = ch.line; }
     } else if (ch.op === "replace_scene") {
       const k = s.scenes.findIndex((x) => x.id === ch.scene_id);
-      if (k >= 0) { const old = s.scenes[k]; s.scenes[k] = { ...ch.scene, fact_note: old.fact_note || "", no_source_needed: old.no_source_needed || false }; }
+      if (k >= 0) {
+        const old = s.scenes[k];
+        // 영상 제작 방식·등장 요소 연결 등 대본 밖에서 정한 값은 대본을 다시 만들어도 유지
+        const keepKeys = ["source_mode", "element_ids", "role", "gen_mode_hint", "edit_hint", "reuse_scene_id"];
+        const kept = Object.fromEntries(keepKeys.filter((key) => old[key] !== undefined).map((key) => [key, old[key]]));
+        s.scenes[k] = { ...ch.scene, ...kept, fact_note: old.fact_note || "", no_source_needed: old.no_source_needed || false };
+      }
     } else if (ch.op === "insert_scene_after") {
       const k = ch.after_scene_id ? s.scenes.findIndex((x) => x.id === ch.after_scene_id) + 1 : 0;
       s.scenes.splice(k, 0, ch.scene);

@@ -9,6 +9,10 @@ Omni Flash 1.1 클립 길이: 4·6·8·10초 (Google Flow 도움말 기준).
 """
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
+
 from .jp_text import mora_count
 from .util import new_id, stable_hash
 
@@ -18,10 +22,22 @@ PRODUCT_LABEL = f"Google Flow ({MODEL_LABEL})"
 ALLOWED = (4, 6, 8, 10)
 ASPECT = "9:16"
 SOURCE_MODES = ("flow", "stock", "upload", "image", "text", "mixed")
+# 공식 도움말(Flow models & supported features)에서 확인한 이 모델의 생성 방식. 모두 4·6·8·10초, 가로·세로 지원.
+SUPPORTED_MODES = ("text", "first_frame", "first_last", "ingredients")
+DOC_URL = "https://support.google.com/flow/answer/16352836"
+# 클립 계획이 매번 다시 계산하는 값(나머지 필드 — 프롬프트·등장 요소·참조·검수·편집 지시 — 는 유지)
+COMPUTED = ("id", "key", "scene_id", "scene_no", "index_in_scene", "start", "end", "need_s", "duration", "duration_manual",
+            "line_ids", "timing")
+# 구간이 바뀐 클립이 이전 클립에서 이어받는 연결 정보
+LINK_FIELDS = ("element_ids", "elements_manual", "role", "gen_mode", "ref_asset_ids", "start_frame", "end_frame", "changes",
+               "edit", "still_asset_id", "reuse_of", "continues_previous")
 
 
 def config_info() -> dict:
-    return {"model_label": MODEL_LABEL, "product_label": PRODUCT_LABEL, "durations": list(ALLOWED), "aspect": ASPECT}
+    return {"model_label": MODEL_LABEL, "product_label": PRODUCT_LABEL, "durations": list(ALLOWED), "aspect": ASPECT,
+            "supported_modes": list(SUPPORTED_MODES), "doc_url": DOC_URL,
+            "doc_note_ko": "Flow 도움말(2026-10-07 확인): Gemini Omni Flash 1.1은 텍스트·첫 프레임·첫+마지막 프레임·재료(참조 이미지)로 "
+                           "영상 생성, 모두 4·6·8·10초. 참조 이미지 최대 개수는 도움말에서 확인하지 못했습니다."}
 
 
 def scene_mode(project: dict, scene: dict) -> str:
@@ -122,24 +138,42 @@ def plan_clips(project: dict, existing: list[dict] | None = None) -> dict:
         line_ids = [ln["id"] for ln in sc.get("lines", []) if ln["id"] in spans]
         bounds = [spans[l][0] for l in line_ids[1:]]
         pieces = _split_scene(s0, e0, bounds)
+        olds_in_scene = [c for c in existing if c.get("scene_id") == sc["id"]]
         for k, (a, b) in enumerate(pieces):
             covered = [l for l in line_ids if spans[l][0] < b - 0.05 and spans[l][1] > a + 0.05]
             key = stable_hash([sc["id"], covered, k])
             old = by_key.get(key)
             dur = fit_duration(b - a) or 10
-            clip = {
+            if old:
+                clip = {k2: v for k2, v in old.items() if k2 not in COMPUTED}  # 프롬프트·연결·검수·편집 지시 모두 유지
+            else:
+                clip = {"prompt_en": "", "prompt_ko": "", "beats_ko": "", "mode": "text", "mode_note_ko": "", "notes": "",
+                        "prompt_for_duration": None, "item_id": None}
+                # 구간이 바뀐 클립: 같은 장면에서 문장이 가장 많이 겹치는 이전 클립의 '연결'만 이어받는다(프롬프트는 다시 만들어야 함)
+                best = max(olds_in_scene, key=lambda c: len(set(c.get("line_ids") or []) & set(covered)), default=None)
+                if best is not None and set(best.get("line_ids") or []) & set(covered):
+                    for f in LINK_FIELDS:
+                        if f in best:
+                            clip[f] = json.loads(json.dumps(best[f]))
+                    clip["inherited_from"] = best.get("id")
+                else:  # 처음 계획: 장면에 적어 둔 기본 연결(예제·사용자 지정)을 클립에 넣는다
+                    for f, sf in (("element_ids", "element_ids"), ("role", "role"), ("gen_mode", "gen_mode_hint"),
+                                  ("edit", "edit_hint"), ("reuse_scene_id", "reuse_scene_id")):
+                        if sc.get(sf):
+                            clip[f] = json.loads(json.dumps(sc[sf]))
+            clip.update({
                 "id": old["id"] if old else new_id("clip"), "key": key, "scene_id": sc["id"], "scene_no": si + 1,
                 "index_in_scene": k + 1, "start": round(a, 3), "end": round(b, 3), "need_s": round(b - a, 2),
                 "duration": old["duration"] if old and old.get("duration_manual") else dur,
                 "duration_manual": bool(old and old.get("duration_manual")),
                 "line_ids": covered, "timing": "실제" if real else "추정",
-                "prompt_en": old.get("prompt_en", "") if old else "", "prompt_ko": old.get("prompt_ko", "") if old else "",
-                "beats_ko": old.get("beats_ko", "") if old else "", "mode": old.get("mode", "text") if old else "text",
-                "mode_note_ko": old.get("mode_note_ko", "") if old else "", "notes": old.get("notes", "") if old else "",
-                "prompt_for_duration": old.get("prompt_for_duration") if old else None,
-                "item_id": old.get("item_id") if old else None,
-            }
+            })
             clips.append(clip)
+    for c in clips:  # '다른 장면 소재 재사용' 기본값 → 그 장면 첫 클립을 재사용 원본으로
+        if c.get("gen_mode") == "reuse" and not c.get("reuse_of") and c.get("reuse_scene_id"):
+            src = next((x for x in clips if x["scene_id"] == c["reuse_scene_id"] and x is not c), None)
+            if src:
+                c["reuse_of"] = src["id"]
     kept = {c["id"] for c in clips}
     dropped = [c for c in existing if c.get("id") not in kept]
     return {"clips": clips, "timing": "실제" if real else "추정", "based_on": timing_hash(project),
@@ -153,3 +187,65 @@ def timing_hash(project: dict) -> str:
         return stable_hash([[c["line_id"], round(c["start"], 2), round(c["end"], 2)] for c in cues])
     return stable_hash([[ln["id"], ln.get("tts", "")] for sc in (project.get("script") or {}).get("scenes", [])
                         for ln in sc.get("lines", [])])
+
+
+# ---------------------------------------------------------------- 영상 정보·실제 사용 구간 프레임 추출
+
+def probe_video(path: Path) -> dict:
+    """ffmpeg 출력에서 길이·프레임률·크기를 읽는다(ffprobe 없이)."""
+    from .util import ffmpeg_exe, run_tool
+
+    r = run_tool([ffmpeg_exe(), "-hide_banner", "-nostdin", "-i", str(path)], timeout=60)
+    err = r.stderr.decode("utf-8", "replace")
+    out: dict = {"duration": None, "fps": None, "width": None, "height": None}
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", err)
+    if m:
+        out["duration"] = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    vline = next((ln for ln in err.splitlines() if "Video:" in ln), "")
+    m = re.search(r"(\d+(?:\.\d+)?)\s*fps", vline) or re.search(r"(\d+(?:\.\d+)?)\s*tbr", vline)
+    if m:
+        out["fps"] = float(m.group(1))
+    m = re.search(r",\s*(\d{2,5})x(\d{2,5})", vline)
+    if m:
+        out["width"], out["height"] = int(m.group(1)), int(m.group(2))
+    return out
+
+
+def extract_frame_at(src: Path, seek: float, dest: Path) -> None:
+    """seek 이후 첫 프레임을 PNG로(입력 앞 -ss = 정확한 위치까지 디코딩)."""
+    from .util import UserError, ffmpeg_exe, run_tool
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    r = run_tool([ffmpeg_exe(), "-y", "-hide_banner", "-nostdin", "-v", "error", "-ss", f"{seek:.4f}", "-i", str(src),
+                  "-frames:v", "1", "-update", "1", str(dest)], timeout=120)
+    if r.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
+        raise UserError("프레임을 뽑지 못했습니다.", r.stderr.decode("utf-8", "replace")[:200])
+
+
+# ---------------------------------------------------------------- 클립 점검(화면·내보내기 공용)
+
+def inspect(project: dict) -> dict:
+    """클립마다 조립한 최종 프롬프트·충돌·주의·참조 자료·Flow 설정·검수 상태를 계산한다(저장하지 않음)."""
+    from . import visual as V
+
+    out = {}
+    for c in V.clips(project):
+        comp = V.compose(project, c)
+        src = c.get("prompt_source") or ("legacy" if c.get("prompt_en") else "composed")
+        sf, ef = V.frame_ref(project, c.get("start_frame")), V.frame_ref(project, c.get("end_frame"))
+        out[c["id"]] = {
+            "composed_en": comp["prompt_en"], "sections": comp["sections"], "mode": comp["mode"],
+            "needs_flow": comp["needs_flow"], "prompt_source": src,
+            "out_of_date": src == "composed" and bool(comp["prompt_en"]) and comp["prompt_en"] != (c.get("prompt_en") or ""),
+            "conflicts": V.find_conflicts(project, c), "warnings": V.find_warnings(project, c),
+            "refs": V.clip_refs(project, c),
+            "start_frame": {k: v for k, v in (sf or {}).items() if k in ("source", "file", "label")} or None,
+            "end_frame": {k: v for k, v in (ef or {}).items() if k in ("source", "file", "label")} or None,
+            "flow_settings": V.flow_settings_ko(project, c, MODEL_LABEL, ASPECT),
+            "guidance": V.guidance_ko(project, c),
+            "review": V.review_state(project, c), "basis": V.review_basis(project, c),
+            "frame_basis": V.frame_basis(project, c),
+            "media": V.resolve_media(project, c),
+            "label": f"S{c.get('scene_no')}-C{c.get('index_in_scene')}",
+        }
+    return out

@@ -95,7 +95,7 @@ export function fmtTime(iso) {
 }
 
 export function badge(state) {
-  const map = { done: ["완료", "ok"], todo: ["미완료", "todo"], stale: ["재생성 필요", "stale"] };
+  const map = { done: ["완료", "ok"], todo: ["미완료", "todo"], stale: ["재생성 필요", "stale"], optional: ["선택", "todo"] };
   const [label, cls] = map[state] || ["-", "todo"];
   return h("span", { class: `badge ${cls}` }, label);
 }

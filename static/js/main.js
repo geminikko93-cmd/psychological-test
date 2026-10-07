@@ -10,14 +10,18 @@ import { renderSources } from "./pages/sources.js";
 import { renderExport } from "./pages/export.js";
 import { renderSettings } from "./pages/settings.js";
 import { renderChannel } from "./pages/channel.js";
+import { renderVisual } from "./pages/visual.js";
+import { renderReview } from "./pages/review.js";
 
 const STEPS = [
   ["plan", "1. 기획", renderPlan],
   ["script", "2. 대본", renderScript],
   ["audio", "3. 음성", renderAudio],
   ["subtitles", "4. 자막", renderSubtitles],
-  ["sources", "5. 영상소스", renderSources],
-  ["export", "6. 게시·내보내기", renderExport],
+  ["visual", "5. 화풍·등장요소", renderVisual],
+  ["sources", "6. 영상소스·Flow", renderSources],
+  ["review", "7. 비교·검수", renderReview],
+  ["export", "8. 게시·내보내기", renderExport],
 ];
 
 let route = { page: "projects", pid: null };
@@ -61,7 +65,7 @@ async function onRoute() {
 
 function renderSidebar() {
   const sb = clear(document.getElementById("sidebar"));
-  sb.append(h("div", { class: "brand", onclick: () => go("projects") }, h("b", {}, "JP 숏폼 작업실"), h("small", {}, "기획 → 대본 → 음성 → 자막 → 소스 → CapCut")));
+  sb.append(h("div", { class: "brand", onclick: () => go("projects") }, h("b", {}, "JP 숏폼 작업실"), h("small", {}, "기획 → 대본 → 음성·자막 → 화풍·요소 → Flow → 검수 → CapCut")));
   sb.append(h("button", { class: `nav ${route.page === "projects" ? "active" : ""}`, onclick: () => go("projects") }, "📁 프로젝트 목록"));
   sb.append(h("button", { class: `nav ${route.page === "channel" ? "active" : ""}`, onclick: () => go("channel") }, "📺 채널 · 주제"));
   if (state.project) {

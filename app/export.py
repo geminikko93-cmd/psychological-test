@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import audio as A
-from . import config, storage
+from . import config, export_flow, storage
 from .jp_text import lint_project
 from .sources import verify_media
 from .srt import build_srt, check_cues, fmt_time
@@ -115,7 +115,11 @@ def precheck(pid: str, p: dict | None = None) -> dict:
     from .flow import scene_mode
     for i, sc in enumerate(scenes, 1):
         mine = [s for s in srcs if s.get("scene_id") == sc["id"] and s.get("status") == "acquired"]
-        if not mine and not sc.get("no_source_needed") and scene_mode(p, sc) != "text":
+        # Flow 장면은 클립 단위로 점검(정지 이미지·재사용 클립은 장면에 새 파일이 없어도 정상)
+        if scene_mode(p, sc) == "flow" and not sc.get("no_source_needed") and not mine and \
+                not any(c.get("scene_id") == sc["id"] for c in (p.get("flow") or {}).get("clips") or []):
+            add("warn", f"장면 {i}에 Flow 클립 계획이 없습니다.", "영상소스 단계에서 [클립 계획 만들기]를 누르세요.")
+        if not mine and not sc.get("no_source_needed") and scene_mode(p, sc) not in ("text", "flow"):
             add("warn", f"장면 {i}에 확보된 영상·이미지가 없습니다.", "영상소스 단계에서 파일을 넣거나 '소스 불필요'로 표시하세요.")
     for s in srcs:
         if s.get("status") != "acquired":
@@ -133,15 +137,7 @@ def precheck(pid: str, p: dict | None = None) -> dict:
         from .flow import timing_hash
         if fl.get("based_on") != timing_hash(p):
             add("stale", "Flow 클립 계획이 최신 자막 시간과 다릅니다.", "영상 단계에서 [클립 계획 다시 계산]을 누르세요.")
-        by_id = {s.get("id"): s for s in srcs}
-        for c in clips:
-            it = by_id.get(c.get("item_id"))
-            label = f"장면 {c.get('scene_no')} 클립 {c.get('index_in_scene')}"
-            if not it:
-                add("warn", f"{label}: 생성한 영상을 넣지 않았습니다.")
-            elif it.get("duration") and it["duration"] + 0.05 < c.get("need_s", 0):
-                add("warn", f"{label}: 영상 길이({it['duration']}초)가 배치 구간({c['need_s']}초)보다 짧습니다.",
-                    "더 긴 길이로 다시 생성하거나 CapCut에서 속도·정지 화면으로 채우세요.")
+        export_flow.precheck_flow(p, clips, add)
     pub = p.get("publish") or {}
     if not pub.get("title"):
         add("warn", "게시 제목이 비어 있습니다.")
@@ -282,7 +278,12 @@ def _write_package(pid: str, p: dict, out: Path, check) -> list[dict]:
     rows = []
     src_names: dict[str, str] = {}
     clips = (p.get("flow") or {}).get("clips") or []
-    clip_by_item = {c.get("item_id"): c for c in clips if c.get("item_id")}
+    owner = {s.get("id"): s.get("clip_id") for s in p["sources"]["items"]}
+    clip_by_item: dict = {}
+    for c in clips:  # 여러 클립이 같은 영상을 쓰면(재사용) 영상을 넣은 원래 클립 이름으로 한 번만 내보낸다
+        iid = c.get("item_id")
+        if iid and (iid not in clip_by_item or c.get("id") == owner.get(iid)):
+            clip_by_item[iid] = c
     for si, sc in enumerate(scenes, 1):
         mine = [s for s in p["sources"]["items"] if s.get("scene_id") == sc["id"] and s.get("status") == "acquired"]
         mine.sort(key=lambda s: (s["id"] not in clip_by_item, clip_by_item.get(s["id"], {}).get("index_in_scene", 0)))
@@ -325,38 +326,8 @@ def _write_package(pid: str, p: dict, out: Path, check) -> list[dict]:
     for name in src_names.values():
         rec(src_dir / name, "장면 소스")
     if clips:
-        items_by_id = {s["id"]: s for s in p["sources"]["items"]}
-        crow = []
-        for c in clips:
-            it = items_by_id.get(c.get("item_id"))
-            crow.append({"장면": c["scene_no"], "클립": c["index_in_scene"], "배치 시작": fmt_time(c["start"]),
-                         "배치 끝": fmt_time(c["end"]), "필요 길이(초)": c["need_s"], "Flow 생성 길이(초)": c["duration"],
-                         "사용할 구간(파일 기준)": f"0초 ~ {c['need_s']}초",
-                         "잘라낼 꼬리(초, 실제 파일 기준)": (round(max(0, it["duration"] - c["need_s"]), 2)
-                                                     if it and it.get("duration") else "(파일 길이 미확인)"),
-                         "부족한 길이(초)": (round(max(0, c["need_s"] - it["duration"]), 2) if it and it.get("duration") else ""),
-                         "파일": src_names.get(c.get("item_id"), "(아직 없음)"),
-                         "실제 파일 길이(초)": (it or {}).get("duration") or "", "Flow 모드": c.get("mode", ""),
-                         "프롬프트(영어)": c.get("prompt_en", ""), "프롬프트 의미": c.get("prompt_ko", "")})
-        b2 = io.StringIO()
-        w2 = csv.DictWriter(b2, fieldnames=list(crow[0].keys()))
-        w2.writeheader()
-        w2.writerows(crow)
-        f_clip = out / "05b_Flow_클립_배치표.csv"
-        f_clip.write_bytes((BOM + b2.getvalue()).encode("utf-8"))  # 엑셀 한글·일본어 깨짐 방지
-        rec(f_clip, "Flow 클립별 배치 시간·생성 길이·파일")
-        st = (p.get("flow") or {}).get("style") or {}
-        from .flow import PRODUCT_LABEL
-        fl_lines = [f"# {PRODUCT_LABEL} 영상 프롬프트", "",
-                    "## 공통 스타일", st.get("look_en", ""), st.get("look_ko", ""), "", "피할 것: " + st.get("avoid_en", ""), ""]
-        for c in clips:
-            fl_lines += [f"## 장면 {c['scene_no']} · 클립 {c['index_in_scene']} — Flow 길이 {c['duration']}초 "
-                         f"(배치 {fmt_time(c['start'])} → {fmt_time(c['end'])}, 모드: {c.get('mode', 'text')})",
-                         c.get("prompt_en", "") or "(프롬프트 없음)", "", "의미: " + (c.get("prompt_ko") or ""),
-                         "진행: " + (c.get("beats_ko") or ""), ""]
-        f_fp = out / "10_Flow_영상프롬프트.txt"
-        f_fp.write_text("\n".join(fl_lines), encoding="utf-8")
-        rec(f_fp, "Google Flow에 넣은 영상 프롬프트 기록")
+        export_flow.copy_still_assets(pid, p, clips, src_dir, src_names, rec, check)
+        export_flow.write_flow_files(pid, p, out, clips, src_names, rec, check)
 
     kind = KIND_LABEL.get((p.get("idea") or {}).get("content_kind", "undecided"), "미정")
     sl = [f"# {p.get('name')} — 대본 (일본어 / 한국어 의미)", f"콘텐츠 구분: {kind}", ""]
@@ -389,7 +360,7 @@ def _write_package(pid: str, p: dict, out: Path, check) -> list[dict]:
 
     pub = p.get("publish") or {}
     cred = credits_text(p)
-    desc_full = (pub.get("description") or "").rstrip()
+    desc_full = export_flow.description_with_notice(p)  # 오락 콘텐츠 고지(없으면 덧붙임)
     if cred:
         desc_full += "\n\n" + cred
     pl = ["# 게시 정보", "", "## 제목", pub.get("title", ""), "", "## 설명문(크레딧 포함, 그대로 붙여 넣기)", desc_full, "",
@@ -417,6 +388,10 @@ def _write_package(pid: str, p: dict, out: Path, check) -> list[dict]:
         "4. '05_장면표_시간_소스.csv'의 시작·종료 시간에 맞춰 '04_영상소스'의 파일을 배치합니다.",
         *(["   Flow 클립(S01_C01_8s_flow.mp4 등)은 '05b_Flow_클립_배치표.csv'의 '배치 시작'에 놓고, '배치 끝' 이후 꼬리는 잘라냅니다.",
            "   Flow 클립에 들어 있는 소리는 내레이션과 겹치므로 음소거하거나 아주 작게 줄이세요."] if clips else []),
+        *(["   ★ 각 Flow 클립은 파일의 '사용 시작'부터 배치표의 '필요 길이'만큼만 씁니다(파일 끝까지 쓰지 않음).",
+           "   ★ 소재 재사용·크롭·확대·정지 화면 지시: '11_일관성_자료/CapCut_편집지시.txt'.",
+           "     이 프로그램은 크롭·확대를 영상에 적용하지 않았습니다. 지시대로 CapCut에서 직접 적용하세요.",
+           "   ★ 질문·선택지(A/B/C)·결과 문구는 영상 안에 없습니다. 자막(텍스트)으로 넣으세요."] if clips else []),
         "   사진은 확대/이동(켄번즈) 효과로 움직임을 주면 좋습니다.",
         "5. 배경음악을 넣는다면 음성보다 충분히 작게(대략 -20dB 전후) 맞추고, 음원의 이용 조건을 확인합니다.",
         "6. 처음 3초에 훅 문장이 화면에 보이는지, 자막과 음성이 맞는지 처음부터 끝까지 한 번 재생해 확인합니다.",

@@ -1,0 +1,458 @@
+{
+ "name": "예제: 작은 방 (창문·시계·책장)",
+ "idea": {
+  "topic": "(예제) この部屋で、いちばん気になるものは？ — 작은 방에서 눈길이 가는 것",
+  "audience": "(초기 가설) 20~30대 일본어 시청자",
+  "notes": "사람이 작성한 예제입니다(AI 생성 아님). 결과 문구는 검증된 성격 판정이 아니라 창작 예시입니다.",
+  "content_kind": "entertainment",
+  "target_seconds": 35,
+  "avoid": "성격·정신 상태·건강 판정, 과장 표현",
+  "platforms": [
+   "YouTube Shorts",
+   "Instagram Reels"
+  ]
+ },
+ "plan": {
+  "source": {
+   "candidate_id": "example",
+   "selected_at": "2026-10-07T00:00:00Z"
+  },
+  "approach_name_ko": "(예제) 같은 방 소재 재사용형 선택",
+  "content_kind": "entertainment",
+  "format_ko": "방 전체 → 선택(정지 화면) → 같은 물건 확대 → 결과(창작 해석) → 다시 선택지와 질문",
+  "first_line_ja": "この部屋で、いちばん気になるものはどれですか？",
+  "first_line_ko": "이 방에서 가장 눈길이 가는 것은 무엇인가요?",
+  "structure_ko": "0~3초 도입\n3~10초 선택지·고를 시간\n10~28초 결과 3개(각 약 6초)\n28~35초 마무리",
+  "scene_count": 6,
+  "choices_use": true,
+  "choices_count": 3,
+  "choices_reason_ko": "한 화면에서 구분하기 쉬운 물건 3개",
+  "payoff_ko": "'오늘은 ~한 기분일지도' 정도의 창작 해석(성격 판정 아님)",
+  "claims_ko": "오락용, 근거 주장 없음",
+  "visuals_ko": "한 장의 확정 방 이미지 + 짧은 Flow 영상 2개",
+  "updated_at": "2026-10-07T00:00:00Z"
+ },
+ "script": {
+  "scenes": [
+   {
+    "id": "s_sr1",
+    "purpose": "도입: 방 전체와 질문을 바로 보여주기 (0~3초)",
+    "role": "intro",
+    "gen_mode_hint": "first_frame",
+    "element_ids": [
+     "el_ex_room",
+     "el_ex_window",
+     "el_ex_clock",
+     "el_ex_shelf"
+    ],
+    "visual": "창문·시계·책장이 고르게 보이는 작은 방 전체. 커튼이 살짝 흔들리고 창밖에 약한 비",
+    "edit_intent": "첫 화면부터 질문 자막을 띄움",
+    "search_keywords": [],
+    "hold_ms": 0,
+    "lines": [
+     {
+      "id": "l_sr01",
+      "display": "この部屋で、いちばん気になるものはどれですか？",
+      "tts": "このへやで、いちばん気になるものは、どれですか？",
+      "ko": "이 방에서 가장 눈길이 가는 것은 무엇인가요?",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": ""
+     }
+    ]
+   },
+   {
+    "id": "s_sr2",
+    "purpose": "선택지: A 창문 / B 시계 / C 책장 을 한 화면에서 (3~10초)",
+    "role": "choice",
+    "gen_mode_hint": "still",
+    "element_ids": [
+     "el_ex_room",
+     "el_ex_window",
+     "el_ex_clock",
+     "el_ex_shelf"
+    ],
+    "visual": "1장면과 같은 방의 확정 이미지를 정지 화면으로. 물건의 모양·위치·개수 변화 없음",
+    "edit_intent": "A 窓 / B 時計 / C 本棚 자막을 각 물건 근처에 같은 크기로",
+    "search_keywords": [],
+    "edit_hint": {
+     "intent": "A 窓 / B 時計 / C 本棚 자막. 세 선택지를 같은 크기·밝기로",
+     "hold_still": true
+    },
+    "hold_ms": 1500,
+    "hold_reason": "직감으로 고를 짧은 시간",
+    "lines": [
+     {
+      "id": "l_sr02",
+      "display": "窓、時計、本棚。",
+      "tts": "まど、とけい、ほんだな。",
+      "ko": "창문, 시계, 책장.",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": ""
+     },
+     {
+      "id": "l_sr03",
+      "display": "直感で、ひとつ選んでください。",
+      "tts": "ちょっかんで、ひとつ選んでください。",
+      "ko": "직감으로 하나 골라 주세요.",
+      "reading_note": "直感(ちょっかん)",
+      "caution": "",
+      "reading_hint": ""
+     }
+    ]
+   },
+   {
+    "id": "s_sr3",
+    "purpose": "결과 A 창문 (약 6초)",
+    "role": "result",
+    "gen_mode_hint": "ingredients",
+    "element_ids": [
+     "el_ex_window",
+     "el_ex_room"
+    ],
+    "visual": "같은 창문 클로즈업. 창밖 비, 커튼이 살짝 흔들림",
+    "edit_intent": "'A 窓' 자막 + 결과 문구",
+    "search_keywords": [],
+    "hold_ms": 0,
+    "lines": [
+     {
+      "id": "l_sr04",
+      "display": "窓を選んだ方は、",
+      "tts": "まどを選んだ方は、",
+      "ko": "창문을 고른 분은,",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": ""
+     },
+     {
+      "id": "l_sr05",
+      "display": "少し景色を変えてみたい気分かもしれません。",
+      "tts": "すこし、けしきを変えてみたい気分かもしれません。",
+      "ko": "조금 풍경을 바꿔 보고 싶은 기분일지도 모릅니다.",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": ""
+     }
+    ]
+   },
+   {
+    "id": "s_sr4",
+    "purpose": "결과 B 시계 (약 6초)",
+    "role": "result",
+    "gen_mode_hint": "reuse",
+    "reuse_scene_id": "s_sr2",
+    "element_ids": [
+     "el_ex_clock",
+     "el_ex_room"
+    ],
+    "visual": "선택 화면과 같은 이미지에서 시계 부분 확대",
+    "edit_intent": "선택 화면 소재 재사용, 시계로 확대",
+    "search_keywords": [],
+    "edit_hint": {
+     "crop": "시계가 화면 중앙에 오도록 크롭",
+     "zoom": "100% → 160% 천천히 확대(6초)",
+     "intent": "'B 時計' 자막 + 결과 문구"
+    },
+    "hold_ms": 0,
+    "lines": [
+     {
+      "id": "l_sr06",
+      "display": "時計を選んだ方は、",
+      "tts": "とけいを選んだ方は、",
+      "ko": "시계를 고른 분은,",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": ""
+     },
+     {
+      "id": "l_sr07",
+      "display": "自分のペースを大切にしたい日かもしれません。",
+      "tts": "じぶんのペースを、大切にしたい日かもしれません。",
+      "ko": "자기 페이스를 소중히 하고 싶은 날일지도 모릅니다.",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": ""
+     }
+    ]
+   },
+   {
+    "id": "s_sr5",
+    "purpose": "결과 C 책장 (약 6초)",
+    "role": "result",
+    "gen_mode_hint": "reuse",
+    "reuse_scene_id": "s_sr2",
+    "element_ids": [
+     "el_ex_shelf",
+     "el_ex_room"
+    ],
+    "visual": "선택 화면과 같은 이미지에서 책장 부분 확대",
+    "edit_intent": "선택 화면 소재 재사용, 책장으로 확대",
+    "search_keywords": [],
+    "edit_hint": {
+     "crop": "책장이 화면 중앙에 오도록 크롭",
+     "zoom": "100% → 160% 천천히 확대(6초)",
+     "intent": "'C 本棚' 자막 + 결과 문구"
+    },
+    "hold_ms": 0,
+    "lines": [
+     {
+      "id": "l_sr08",
+      "display": "本棚を選んだ方は、",
+      "tts": "ほんだなを選んだ方は、",
+      "ko": "책장을 고른 분은,",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": ""
+     },
+     {
+      "id": "l_sr09",
+      "display": "好きなことに、じっくり浸りたい日かもしれません。",
+      "tts": "すきなことに、じっくりひたりたい日かもしれません。",
+      "ko": "좋아하는 일에 푹 빠지고 싶은 날일지도 모릅니다.",
+      "reading_note": "浸りたい(ひたりたい)",
+      "caution": "",
+      "reading_hint": ""
+     }
+    ]
+   },
+   {
+    "id": "s_sr6",
+    "purpose": "마무리: 선택지를 다시 보여주고 짧은 질문",
+    "role": "ending",
+    "gen_mode_hint": "reuse",
+    "reuse_scene_id": "s_sr2",
+    "element_ids": [
+     "el_ex_room",
+     "el_ex_window",
+     "el_ex_clock",
+     "el_ex_shelf"
+    ],
+    "visual": "선택 화면과 같은 방 이미지",
+    "edit_intent": "A/B/C 자막 다시 + 질문",
+    "edit_hint": {
+     "intent": "A 窓 / B 時計 / C 本棚 자막을 다시 표시하고 질문 자막",
+     "hold_still": true
+    },
+    "search_keywords": [],
+    "hold_ms": 0,
+    "lines": [
+     {
+      "id": "l_sr10",
+      "display": "あなたはどれを選びましたか？",
+      "tts": "あなたは、どれを選びましたか？",
+      "ko": "당신은 무엇을 골랐나요?",
+      "reading_note": "",
+      "caution": "",
+      "reading_hint": ""
+     }
+    ]
+   }
+  ],
+  "title_candidates": [
+   {
+    "ja": "この部屋で、いちばん気になるものは？",
+    "ko": "이 방에서 가장 눈길이 가는 것은?"
+   }
+  ],
+  "claims_level_ko": "창작 오락",
+  "self_check_ko": [],
+  "generated_at": null,
+  "updated_at": null,
+  "history": [],
+  "review": null
+ },
+ "publish": {
+  "title": "この部屋で、いちばん気になるものは？",
+  "description": "直感でひとつ選んでみてください。",
+  "hashtags": "#心理テスト #直感",
+  "credits_extra": "",
+  "ai_draft": null,
+  "entertainment_notice": true
+ },
+ "production": {
+  "source_mode": "flow"
+ },
+ "visual": {
+  "style": {
+   "preset_id": "picturebook",
+   "locked": false,
+   "version": 0,
+   "label_ko": "A. 따뜻한 그림책풍",
+   "desc_ko": "종이 질감과 부드러운 채색, 간결한 윤곽선. 아이보리·세이지 그린·갈색 중심의 차분한 일러스트로 성인도 편하게 볼 수 있음. 움직임이 적어도 분위기가 유지됨.",
+   "style_en": "Warm picture-book illustration for adult viewers: visible paper grain, soft hand-painted coloring, simple clean outlines, calm and quiet mood.",
+   "palette": [
+    {
+     "name": "ivory",
+     "hex": "#F2ECDD"
+    },
+    {
+     "name": "sage green",
+     "hex": "#A7B49A"
+    },
+    {
+     "name": "warm brown",
+     "hex": "#8A6A4B"
+    }
+   ],
+   "lighting_en": "soft diffused daylight, gentle low-contrast shadows",
+   "material_en": "matte painted surfaces with paper texture",
+   "line_en": "thin, simple, slightly hand-drawn outlines",
+   "motion_en": "subtle ambient motion only (small curtain sway, light rain outside, slow light change, slow camera move)",
+   "motion_ko": "커튼의 작은 흔들림, 창밖의 비, 약한 빛 변화, 느린 카메라 이동",
+   "avoid_en": "photorealism, glossy 3D render, thick black outlines, neon or oversaturated colors, busy patterns, imitation of any specific artist or existing character",
+   "accent": {
+    "name": "dusty coral",
+    "hex": "#D98E73",
+    "note_ko": "이번 회차 강조색(작은 소품에만)"
+   }
+  },
+  "elements": [
+   {
+    "id": "el_ex_room",
+    "name": "Small Room",
+    "type": "place",
+    "desc_ko": "창문(왼쪽)·시계(가운데)·책장(오른쪽)이 있는 작은 1인 방",
+    "fixed_en": "A small, quiet one-person room seen straight from the front: an ivory wall and a light wooden floor; a tall window on the left, a round wall clock in the center of the wall, a low wooden bookshelf on the right. The three items are evenly spaced and about the same visual size",
+    "features": {
+     "layout": "front view of one wall, small room",
+     "furniture": "only the window, clock and bookshelf as main items",
+     "openings": "one tall window on the left wall"
+    },
+    "must_keep": [
+     "window left, clock center, bookshelf right",
+     "only these three main items",
+     "no writing on walls"
+    ],
+    "status": "draft",
+    "locked": false,
+    "version": 0,
+    "source": "example"
+   },
+   {
+    "id": "el_ex_window",
+    "name": "Window",
+    "type": "object",
+    "desc_ko": "네 칸 나무 창틀, 세이지 그린 커튼",
+    "fixed_en": "A tall rectangular window with a thin warm-brown wooden frame divided into four panes, sage green curtains gathered on both sides, soft daylight and light rain outside",
+    "features": {
+     "shape": "tall rectangle, four panes",
+     "color": "warm-brown frame, sage green curtains",
+     "material": "wood frame, cotton curtains",
+     "parts": "two curtains",
+     "unique": "light rain outside"
+    },
+    "must_keep": [
+     "four panes",
+     "warm-brown wooden frame",
+     "sage green curtains"
+    ],
+    "status": "draft",
+    "locked": false,
+    "version": 0,
+    "source": "example"
+   },
+   {
+    "id": "el_ex_clock",
+    "name": "Wall Clock",
+    "type": "object",
+    "desc_ko": "아이보리 문자판의 둥근 벽시계(숫자 없음)",
+    "fixed_en": "A round wall clock with an ivory face, a thin warm-brown wooden rim and simple dark brown hands; the face has small tick marks only, with no numbers or letters",
+    "features": {
+     "shape": "round",
+     "color": "ivory face, warm-brown rim, dark brown hands",
+     "material": "wood rim",
+     "parts": "two hands, tick marks",
+     "unique": "no numbers or letters"
+    },
+    "must_keep": [
+     "round",
+     "ivory face",
+     "no numbers or letters on the face"
+    ],
+    "status": "draft",
+    "locked": false,
+    "version": 0,
+    "source": "example"
+   },
+   {
+    "id": "el_ex_shelf",
+    "name": "Bookshelf",
+    "type": "object",
+    "desc_ko": "2단 나무 책장, 제목 없는 책 10권 정도, 위에 작은 화분",
+    "fixed_en": "A low two-tier warm-brown wooden bookshelf holding about ten books with plain spines in ivory, sage green and brown, and a small green potted plant on top",
+    "features": {
+     "shape": "low, two tiers",
+     "color": "warm-brown wood; ivory, sage green and brown book spines",
+     "material": "wood",
+     "parts": "about ten books, one small plant",
+     "unique": "book spines without titles"
+    },
+    "must_keep": [
+     "two tiers",
+     "plain spines without titles",
+     "small green plant on top"
+    ],
+    "status": "draft",
+    "locked": false,
+    "version": 0,
+    "source": "example"
+   }
+  ],
+  "assets": [],
+  "frames": [],
+  "structure": {
+   "id": "choice3_35",
+   "label_ko": "선택형 35초 (선택지 3개)",
+   "choices": 3,
+   "target_seconds": 35,
+   "note_ko": "추천 출발점. 실제 길이는 일본어 음성·자막 시간으로 다시 맞춥니다. 결과를 다음 영상으로 미루지 않습니다.",
+   "segments": [
+    {
+     "key": "intro",
+     "role": "intro",
+     "start": 0,
+     "end": 3,
+     "label_ko": "공간과 질문을 바로 보여주기"
+    },
+    {
+     "key": "choices",
+     "role": "choice",
+     "start": 3,
+     "end": 7,
+     "label_ko": "선택지를 한 화면에서 확인(A/B/C는 편집 자막)"
+    },
+    {
+     "key": "think",
+     "role": "think",
+     "start": 7,
+     "end": 10,
+     "label_ko": "짧게 고를 시간(정지 화면 유지 가능)"
+    },
+    {
+     "key": "results",
+     "role": "result",
+     "start": 10,
+     "end": 28,
+     "label_ko": "결과를 선택지마다 약 6초씩"
+    },
+    {
+     "key": "ending",
+     "role": "ending",
+     "start": 28,
+     "end": 35,
+     "label_ko": "선택지를 다시 보여주고 짧은 질문으로 마무리"
+    }
+   ],
+   "choice_rules_ko": [
+    "선택하는 동안 물건의 모양·위치·개수가 바뀌지 않기",
+    "선택지를 비슷한 크기와 가독성으로 보여주기",
+    "특정 선택지만 강조하는 움직임이나 조명을 피하기",
+    "A/B/C와 질문은 편집용 자막으로 분리하기",
+    "필요하면 정지 이미지를 유지하기"
+   ],
+   "use": true
+  },
+  "example_note_ko": "예제의 화풍·등장 요소는 '확정 전 초안'입니다. 기준 이미지를 올린 뒤 확인·확정하세요."
+ }
+}

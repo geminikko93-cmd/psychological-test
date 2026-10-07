@@ -145,6 +145,13 @@ def production_of(project: dict) -> dict:
     prod = project.get("production") or {}
     modes = {sc.get("id"): sc.get("source_mode") for sc in (project.get("script") or {}).get("scenes", []) if sc.get("source_mode")}
     out = {"source_mode": prod.get("source_mode") or "mixed", "label_ko": SOURCE_MODE_LABELS.get(prod.get("source_mode") or "mixed")}
+    vis = project.get("visual") or {}
+    if (vis.get("style") or {}).get("label_ko"):
+        out["visual_style_ko"] = vis["style"]["label_ko"] + " — " + (vis["style"].get("desc_ko") or "")
+    if (vis.get("structure") or {}).get("use"):
+        st = vis["structure"]
+        out["structure_template"] = {"note": "推奨構成(制作者が選択・変更可。実際の長さは音声で決まる。合わなければ変えてよい)",
+                                     "choices": st.get("choices"), "segments": st.get("segments")}
     if modes:
         out["scene_overrides"] = {k: SOURCE_MODE_LABELS.get(v, v) for k, v in modes.items()}
     return out
@@ -302,40 +309,100 @@ async def run_publish(project: dict, job) -> dict:
             "generated_at": now_iso(), "log": _usage_entry("게시 정보", res)}
 
 
+def fixed_context(project: dict) -> dict:
+    """AI에게 '참조용'으로만 보내는 고정 정보(AI 출력은 이 값을 바꾸지 못한다)."""
+    from . import visual as V
+
+    st = (project.get("visual") or {}).get("style") or {}
+    style_text, _ = V.style_block(project) if st.get("style_en") else ("", "")
+    return {"style_locked_text": style_text,
+            "elements": [{"id": e["id"], "name": e.get("name"), "type": e.get("type"), "desc_ko": e.get("desc_ko", ""),
+                          "fixed_en_readonly": e.get("fixed_en", ""), "confirmed": bool(e.get("locked"))}
+                         for e in V.elements(project)],
+            "structure": (project.get("visual") or {}).get("structure") or {}}
+
+
 async def run_flow_prompts(project: dict, clip_ids: list[str] | None, instruction: str, job) -> dict:
+    from . import visual as V
+    from .presets import CLIP_ROLES
+
     fl = project.get("flow") or {}
     clips = fl.get("clips") or []
     if not clips:
         raise UserError("먼저 클립 계획을 만드세요.", "영상 단계에서 [클립 계획 만들기]를 누르세요.")
     lines = {ln["id"]: ln for sc in (project.get("script") or {}).get("scenes", []) for ln in sc.get("lines", [])}
     scenes = [{"scene_id": sc["id"], "purpose_ko": sc.get("purpose", ""), "visual_ko": sc.get("visual", ""),
-               "edit_intent_ko": sc.get("edit_intent", ""),
+               "edit_intent_ko": sc.get("edit_intent", ""), "role": sc.get("role", ""),
                "lines": [{"ja": ln.get("display", ""), "ko": ln.get("ko", "")} for ln in sc.get("lines", [])]}
               for sc in (project.get("script") or {}).get("scenes", [])]
     clip_view = [{"clip_id": c["id"], "scene_id": c["scene_id"], "duration_s": c["duration"],
-                  "covers_narration_s": [c["start"], c["end"]],
+                  "covers_narration_s": [c["start"], c["end"]], "role": c.get("role", ""),
+                  "element_ids_now": c.get("element_ids") or [], "gen_mode_now": c.get("gen_mode", ""),
                   "narration_ja": [lines[l].get("display", "") for l in c["line_ids"] if l in lines],
                   "narration_ko": [lines[l].get("ko", "") for l in c["line_ids"] if l in lines],
-                  "current_prompt_en": c.get("prompt_en", "")} for c in clips]
+                  "current_var_en": c.get("var_en", "")} for c in clips]
     valid = {c["id"] for c in clips}
     only = [i for i in (clip_ids or []) if i in valid] or None
+    fixed = fixed_context(project)
     user = prompts.flow_prompt(project.get("idea") or {}, plan_input(project), scenes, clip_view,
-                               fl.get("style"), instruction, only)
+                               fl.get("style"), instruction, only, fixed)
     res = await _call(user, job)
     obj = extract_json(res["text"])
-    sb = obj.get("style_bible") if isinstance(obj.get("style_bible"), dict) else {}
-    style = {"look_en": _s(sb.get("look_en")), "look_ko": _s(sb.get("look_ko")),
-             "recurring_ko": [_s(x) for x in (sb.get("recurring_ko") or [])][:10], "palette_ko": _s(sb.get("palette_ko")),
-             "avoid_en": _s(sb.get("avoid_en"))}
+    style = None
+    if not fixed["style_locked_text"]:  # 화풍이 확정된 프로젝트에서는 AI 스타일 제안을 받지 않는다
+        sb = obj.get("style_bible") if isinstance(obj.get("style_bible"), dict) else {}
+        style = {"look_en": _s(sb.get("look_en")), "look_ko": _s(sb.get("look_ko")),
+                 "recurring_ko": [_s(x) for x in (sb.get("recurring_ko") or [])][:10], "palette_ko": _s(sb.get("palette_ko")),
+                 "avoid_en": _s(sb.get("avoid_en"))}
+    el_ids = {e["id"] for e in V.elements(project)}
     out = []
     targets = set(only) if only else valid
     for c in obj.get("clips") or []:
         if not isinstance(c, dict) or c.get("clip_id") not in targets:
             continue
-        mode = c.get("mode") if c.get("mode") in ("text", "first_frame", "ingredients") else "text"
-        out.append({"clip_id": c["clip_id"], "prompt_en": _s(c.get("prompt_en"), 3000), "prompt_ko": _s(c.get("prompt_ko"), 3000),
-                    "beats_ko": _s(c.get("beats_ko"), 1000), "mode": mode, "mode_note_ko": _s(c.get("mode_note_ko")),
-                    "risk_ko": _s(c.get("risk_ko"))})
+        mode = c.get("gen_mode") or c.get("mode")
+        mode = mode if mode in V.GEN_MODES else "text"
+        var_en = _s(c.get("var_en") or c.get("prompt_en"), 3000)
+        out.append({"clip_id": c["clip_id"], "var_en": var_en, "var_ko": _s(c.get("var_ko") or c.get("prompt_ko"), 3000),
+                    "beats_ko": _s(c.get("beats_ko"), 1000), "gen_mode": mode,
+                    "element_ids": [e for e in (c.get("element_ids") or []) if e in el_ids],  # 정의된 요소만
+                    "role": c.get("role") if c.get("role") in CLIP_ROLES else "",
+                    "continues_previous": c.get("continues_previous") is True,
+                    "intended_change_en": _s(c.get("intended_change_en"), 500),
+                    "intended_change_ko": _s(c.get("intended_change_ko"), 500),
+                    "mode_note_ko": _s(c.get("mode_note_ko")), "risk_ko": _s(c.get("risk_ko"))})
     if not out:
         raise UserError("AI가 클립 프롬프트를 돌려주지 않았습니다.", "다시 시도하세요.", 422)
     return {"style": style, "clips": out, "generated_at": now_iso(), "log": _usage_entry("Flow 프롬프트", res)}
+
+
+async def run_elements(project: dict, instruction: str, job) -> dict:
+    """대본에서 반복 등장 요소 초안 추출. 확정 요소는 바꾸지 않고, 결과는 화면에서 사용자가 골라 적용한다."""
+    from . import visual as V
+
+    sv = script_view(project)
+    if not sv["scenes"]:
+        raise UserError("대본이 있어야 등장 요소를 추출할 수 있습니다.")
+    existing = [{"id": e["id"], "name": e.get("name"), "type": e.get("type"), "confirmed": bool(e.get("locked")),
+                 "fixed_en": e.get("fixed_en", "")} for e in V.elements(project)]
+    style_text, _ = V.style_block(project)
+    res = await _call(prompts.elements_prompt(project.get("idea") or {}, plan_input(project), sv, existing, style_text,
+                                              instruction), job)
+    obj = extract_json(res["text"])
+    scene_ids = {s["scene_id"] for s in sv["scenes"]}
+    props = []
+    for d in obj.get("elements") or []:
+        if not isinstance(d, dict) or not _s(d.get("name")):
+            continue
+        typ = d.get("type") if d.get("type") in V.ELEMENT_TYPES else "object"
+        keys = [k for k, _ in V.FEATURE_KEYS[typ]]
+        feats = d.get("features") if isinstance(d.get("features"), dict) else {}
+        props.append({"id": new_id("el"), "name": _s(d.get("name"), 60), "type": typ, "desc_ko": _s(d.get("desc_ko"), 600),
+                      "fixed_en": _s(d.get("fixed_en"), 1200), "features": {k: _s(feats.get(k), 300) for k in keys},
+                      "must_keep": [_s(x, 120) for x in (d.get("must_keep_en") or []) if _s(x)][:10],
+                      "scene_ids": [x for x in (d.get("appears_in_scene_ids") or []) if x in scene_ids],
+                      "reason_ko": _s(d.get("reason_ko"), 400), "source": "ai"})
+    if not props:
+        raise UserError("AI가 등장 요소를 돌려주지 않았습니다.", "다시 시도하세요.", 422)
+    merged = V.merge_element_proposals(V.elements(project), props)
+    return {**merged, "notes_ko": _s(obj.get("notes_ko")), "generated_at": now_iso(), "log": _usage_entry("등장 요소 추출", res)}

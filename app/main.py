@@ -11,11 +11,12 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ai_client, ai_tasks, align, channel, config, export, flow, jobs, sources, storage, subs_merge
+from . import ai_client, ai_tasks, align, channel, config, export, flow, jobs, presets, sources, storage, subs_merge
 from . import audio as A
+from . import visual as V
 from .jp_text import lint_project, mora_count, overlap_report, reading_hint, wrap_lines
 from .srt import build_srt, check_cues
-from .util import UserError, now_iso, safe_filename, sha256_file
+from .util import UserError, new_id, now_iso, safe_filename, sha256_file, stable_hash
 
 config.ensure_dirs()
 app = FastAPI(title="JP Shorts Studio", docs_url=None, redoc_url=None, openapi_url=None)
@@ -132,6 +133,7 @@ async def projects():
 async def new_project(body: dict):
     base = storage.empty_project(str(body.get("name") or "새 프로젝트")[:80])
     base["idea"].update(channel.idea_from_profile())  # 채널 기본 설정으로 미리 채움
+    channel.visual_defaults(base)  # 채널에서 고른 기본 화풍(잠금 전 초안)
     return _with_status(storage.create_project(base["name"], base))
 
 
@@ -158,6 +160,22 @@ async def put_channel(body: dict):
 @app.post("/api/channel/reseed")
 async def channel_reseed():
     return channel.reseed()
+
+
+@app.get("/api/presets")
+async def get_presets():
+    return presets.all_presets()
+
+
+@app.post("/api/channel/apply-preset")
+async def channel_apply_preset(body: dict):
+    keys = [str(k) for k in body.get("keys") or [] if isinstance(k, str)]
+    return channel.apply_preset(keys, bool(body.get("rules")))
+
+
+@app.post("/api/channel/add-ideas")
+async def channel_add_ideas():
+    return channel.add_ideas()
 
 
 @app.post("/api/channel/topics")
@@ -244,7 +262,7 @@ async def media(pid: str, path: str):
 async def ai_task(pid: str, task: str, body: dict):
     ai_client.check_ready()
     p = storage.load_project(pid)
-    labels = {"plan": "기획 방향 제안", "script": "대본 생성", "partial": "부분 재생성", "review": "대본 검토",
+    labels = {"elements": "반복 등장 요소 추출", "plan": "기획 방향 제안", "script": "대본 생성", "partial": "부분 재생성", "review": "대본 검토",
               "publish": "게시 정보 생성", "flow": "Flow 영상 프롬프트", "plan_one": "기획 후보 1개 다시 만들기"}
     if task not in labels:
         raise UserError("알 수 없는 AI 작업입니다.", status=404)
@@ -261,6 +279,8 @@ async def ai_task(pid: str, task: str, body: dict):
                                               str(body.get("instruction") or ""), job)
         if task == "review":
             return await ai_tasks.run_review(p, job)
+        if task == "elements":
+            return await ai_tasks.run_elements(p, str(body.get("instruction") or ""), job)
         if task == "flow":
             ids = body.get("clip_ids") if isinstance(body.get("clip_ids"), list) else None
             return await ai_tasks.run_flow_prompts(p, ids, str(body.get("instruction") or ""), job)
@@ -594,22 +614,121 @@ async def flow_plan(pid: str):
     return flow.plan_clips(p, (fl.get("clips") or []) + (fl.get("previous_clips") or []))
 
 
+@app.post("/api/flow/inspect")
+async def flow_inspect(body: dict):
+    """화면의 현재 프로젝트(저장 전 포함)로 클립별 최종 프롬프트·충돌·참조·검수 상태를 계산. 저장하지 않음."""
+    p = body.get("project")
+    if not isinstance(p, dict):
+        raise UserError("프로젝트 내용이 없습니다.")
+    return {"clips": flow.inspect(p)}
+
+
+@app.post("/api/flow/apply-ai")
+async def flow_apply_ai(body: dict):
+    """AI 프롬프트 결과를 화면의 현재 프로젝트에 적용한 클립 목록을 돌려준다(가변 부분만 바뀜, 저장은 화면에서)."""
+    p, res = body.get("project"), body.get("result")
+    if not isinstance(p, dict) or not isinstance(res, dict):
+        raise UserError("적용할 내용이 없습니다.")
+    return V.apply_ai_prompts(p, dict(res, full=not body.get("clip_ids")))
+
+
+IMG_EXT = {"png", "jpg", "jpeg", "webp"}
+
+
+@app.post("/api/projects/{pid}/visual/upload")
+def visual_upload(pid: str, files: list[UploadFile] = File(...), kind: str = Form("reference"),
+                  element_id: str = Form(""), clip_id: str = Form(""), note: str = Form("")):
+    """기준 이미지·시작 이미지 후보 수동 업로드(이미지 생성 API 없음). 프로젝트 폴더 기준 상대경로로 저장."""
+    storage.load_project(pid)
+    if kind not in ("reference", "start", "pose", "end"):
+        raise UserError("알 수 없는 이미지 용도입니다.")
+    out, errors = [], []
+    for f in files:
+        name = f.filename or "image"
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        data = f.file.read(MAX_SOURCE + 1)
+        if ext not in IMG_EXT:
+            errors.append({"name": name, "error": f"이미지(PNG·JPG·WEBP)만 넣을 수 있습니다(.{ext})."})
+            continue
+        aid = new_id("va")
+        rel = f"media/visual/{kind}/{aid}_{safe_filename(name, 'image')}"
+        dest = storage.media_path(pid, rel)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        ok, err = sources.verify_media(dest)
+        if not ok:
+            dest.unlink(missing_ok=True)
+            errors.append({"name": name, "error": "이미지를 열 수 없습니다.", "hint": err})
+            continue
+        info = flow.probe_video(dest)
+        out.append({"id": aid, "kind": kind, "file": rel, "orig_name": safe_filename(name, "image"), "sha256": sha256_file(dest),
+                    "element_id": element_id or None, "clip_id": clip_id or None, "note": note[:500], "added_at": now_iso(),
+                    "width": info.get("width"), "height": info.get("height")})
+    return {"assets": out, "errors": errors}
+
+
+def _extract_used_frames(pid: str, p: dict, clip: dict, kinds: list[str]) -> list[dict]:
+    """편집에서 실제로 쓰는 구간(use_start ~ use_start+need_s) 안의 프레임만 뽑는다. 원본 파일의 끝 프레임이 아님."""
+    m = V.resolve_media(p, clip)
+    if not m:
+        raise UserError("이 클립에 연결된 영상·이미지가 없습니다.", "먼저 Flow에서 만든 영상을 넣으세요.")
+    basis = V.frame_basis(p, clip)
+    src = storage.media_path(pid, m["file"])
+    if not src.exists():
+        raise UserError("원본 파일이 프로젝트 폴더에 없습니다.")
+    base = {"clip_id": clip["id"], "clip_label": f"S{clip.get('scene_no')}-C{clip.get('index_in_scene')}",
+            "item_id": basis["item_id"], "item_sig": basis["item_sig"], "use_start": basis["use_start"],
+            "use_len": basis["use_len"], "src_file": m["file"], "extracted_at": now_iso()}
+    kind_of = lambda k: "last_used" if k == "last" else f"review_{k}"  # noqa: E731
+    if m["media"] == "image":  # 정지 이미지: 어느 시점이든 같은 화면이라 원본 이미지를 그대로 가리킨다
+        return [dict(base, id=new_id("fr"), kind=kind_of(k), t=0, k=0, fps=None, src_duration=None, file=m["file"])
+                for k in kinds]
+    info = flow.probe_video(src)
+    times = V.used_frame_times(basis["use_start"], basis["use_len"], info.get("duration"), info.get("fps"))
+    out = []
+    for k in kinds:
+        tk = times["end" if k == "last" else k]
+        tag = stable_hash([basis, tk["k"], kind_of(k)])[:10]
+        rel = f"media/visual/frames/{clip['id']}_{kind_of(k)}_{tag}.png"
+        dest = storage.media_path(pid, rel)
+        if not dest.exists():  # 같은 원본·같은 구간이면 같은 파일. 다른 구간에서 뽑은 예전 파일은 지우지 않음
+            flow.extract_frame_at(src, tk["seek"], dest)
+        out.append(dict(base, id=new_id("fr"), kind=kind_of(k), t=tk["t"], k=tk["k"], fps=times["fps"],
+                        src_duration=info.get("duration"), file=rel,
+                        clipped=bool(info.get("duration") and basis["use_start"] + basis["use_len"] > info["duration"] + 1e-3)))
+    return out
+
+
+@app.post("/api/projects/{pid}/flow/frames")
+def flow_frames(pid: str, body: dict):
+    p = storage.load_project(pid)
+    clip = next((c for c in V.clips(p) if c.get("id") == body.get("clip_id")), None)
+    if not clip:
+        raise UserError("클립을 찾을 수 없습니다.", "화면을 새로 고친 뒤 다시 시도하세요.")
+    kinds = [k for k in body.get("kinds") or ["start", "mid", "end"] if k in ("start", "mid", "end", "last")]
+    return {"frames": _extract_used_frames(pid, p, clip, kinds or ["last"])}
+
+
 @app.post("/api/projects/{pid}/flow/lastframe")
 def flow_lastframe(pid: str, body: dict):
+    """(이전 버전 호환) 실제 사용 구간의 끝 프레임. item_id만 오면 그 영상을 쓰는 클립을 찾는다."""
     p = storage.load_project(pid)
-    item = next((i for i in (p.get("sources") or {}).get("items", []) if i.get("id") == body.get("item_id")), None)
-    if not item or item.get("kind") != "video":
-        raise UserError("영상 파일을 찾을 수 없습니다.")
-    src = storage.media_path(pid, item["file"])
-    rel = f"media/flow/frames/{item['id']}_last.png"
-    dest = storage.media_path(pid, rel)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    from .util import ffmpeg_exe, run_tool
-    r = run_tool([ffmpeg_exe(), "-y", "-hide_banner", "-nostdin", "-v", "error", "-sseof", "-0.2", "-i", str(src),
-                  "-frames:v", "1", "-update", "1", str(dest)], timeout=120)
-    if r.returncode != 0 or not dest.exists():
-        raise UserError("마지막 프레임을 뽑지 못했습니다.", r.stderr.decode("utf-8", "replace")[:200])
-    return {"file": rel}
+    cl = V.clips(p)
+    clip = next((c for c in cl if c.get("id") == body.get("clip_id")), None) or \
+        next((c for c in cl if c.get("item_id") == body.get("item_id")), None)
+    if not clip:
+        raise UserError("이 영상을 쓰는 클립을 찾을 수 없습니다.")
+    fr = _extract_used_frames(pid, p, clip, ["last"])[0]
+    return {"file": fr["file"], "frame": fr}
+
+
+@app.post("/api/examples/small-room")
+def import_small_room():
+    data = json.loads((config.STATIC_DIR.parent / "examples" / "example_small_room.json").read_text(encoding="utf-8"))
+    base = storage.empty_project(data.get("name", "예제"))
+    for k, v in data.items():
+        base[k] = v
+    return _with_status(storage.create_project(base["name"], base))
 
 
 # ---------------------------------------------------------------- 내보내기
